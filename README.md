@@ -1,5 +1,7 @@
 ## Routing Transformer (wip)
 
+<img src="./routing_attention.png" width="500px"></img>
+
 Fully featured implementation of <a href="https://arxiv.org/pdf/2003.05997.pdf">Routing Transformer</a>
 
 ## Citation
