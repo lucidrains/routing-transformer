@@ -64,13 +64,15 @@ def kmeans_iter(x, means, num_clusters, compute_se_):  # hard k-means single ite
     return means, se
 
 def kmeans(x, means, training=True, reset=False, compute_se=False):
+    b, *_, d = x.shape
     num_clusters = means.shape[1]
+
     max_iters = 1 if training else 0
     
     if reset:
         max_iters = max(10, max_iters)
-        means = x.transpose(0, 1).contiguous().view(x.size(1), -1, x.size(-1))
-        means = means[:, torch.randperm(means.size(1), device=x.device)[:num_clusters]]
+        means = x.transpose(0, 1).contiguous().view(t, -1, d)
+        means = means[:, torch.randperm(num_clusters, device=x.device)[:num_clusters]]
 
     se = None
 
@@ -81,11 +83,11 @@ def kmeans(x, means, training=True, reset=False, compute_se=False):
     return means, dists, se
 
 # pick the k points closest to each centroid and sort their indices in an ascending order for causal attention
-def distribution(window_size, dists, means):
+def distribution(dists, window_size):
     _, topk_indices = dists.topk(k=window_size, dim=-2)
     sort_val, _ = topk_indices.sort(dim=-2)
     indices = sort_val.transpose(-2, -1)  # [b, h, c, l]
-    return indices, means
+    return indices
 
 def scatter_mean(t, index, dim, eps = 1e-5):
     numer = torch.zeros_like(t).scatter_add(dim, index, t)
@@ -256,7 +258,7 @@ class KmeansAttention(nn.Module):
                 self.initted[0] = True
 
             means, dists, se = kmeans(k, self.means, training=self.training, reset=reset)
-            indices, means = distribution(wsz, dists, means)
+            indices = distribution(dists, wsz)
 
             if self.training:
                 self.means.copy_(means)
