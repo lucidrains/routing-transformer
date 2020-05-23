@@ -12,6 +12,9 @@ TOKEN_SELF_ATTN_VALUE = -5e4
 def default(val, default_val):
     return default_val if val is None else val
 
+def find_modules(nn_module, type):
+    return [module for module in nn_module.modules() if isinstance(module, type)]
+
 def is_empty(t):
     return t.nelement() == 0
 
@@ -286,7 +289,6 @@ class KmeansAttention(nn.Module):
 
             if self.training:
                 self.new_means.copy_(means)
-                self.update_kmeans(means)
 
             indices = indices.contiguous().view(*indices.size()[:2], -1)
         
@@ -404,6 +406,15 @@ class SelfAttention(nn.Module):
         out = self.to_out(out)
         return self.dropout(out)
 
+def register_kmeans_update_on_backwards(module):
+    module.kmean_attention_modules = find_modules(module, KmeansAttention)
+
+    def hook(_, grad_in, grad_out):
+        for m in module.kmean_attention_modules:
+            m.update_kmeans()
+
+    module.register_backward_hook(hook)
+
 class RoutingTransformer(nn.Module):
     def __init__(self, dim, depth, max_seq_len, heads = 8, window_size = 64, causal = False, attn_dropout = 0., ff_dropout = 0., attn_layer_dropout = 0., n_local_attn_heads = 0, ff_glu = False):
         super().__init__()
@@ -425,6 +436,8 @@ class RoutingTransformer(nn.Module):
 
         self.layers = nn.ModuleList(layers)
         self.pad_to_window_size = window_size
+
+        register_kmeans_update_on_backwards(self)        
 
     def forward(self, x, **kwargs):
         for layer, ff in self.layers:
