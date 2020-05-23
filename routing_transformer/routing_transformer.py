@@ -247,7 +247,10 @@ class KmeansAttention(nn.Module):
 
             means, dists, se = kmeans(k, self.means, training=self.training, reset=reset)
             indices, means = distribution(self.window_size, dists, means)
-            self.means.copy_(means)
+
+            if self.training:
+                self.means.copy_(means)
+
             indices = indices.contiguous().view(*indices.size()[:2], -1)
         
         b, h, t, d, device = *qk.shape, qk.device
