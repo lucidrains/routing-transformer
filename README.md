@@ -68,3 +68,12 @@ Special thanks to <a href="https://github.com/AranKomat">Aran Komatsuzaki</a> fo
     url     = {https://arxiv.org/pdf/2003.05997.pdf}
 }
 ```
+
+```bibtex
+@misc{shazeer2020glu,
+    title   = {GLU Variants Improve Transformer},
+    author  = {Noam Shazeer},
+    year    = {2020},
+    url     = {https://arxiv.org/abs/2002.05202}    
+}
+```

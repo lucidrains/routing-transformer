@@ -9,6 +9,9 @@ TOKEN_SELF_ATTN_VALUE = -5e4
 
 # helper functions
 
+def default(val, default_val):
+    return default_val if val is None else val
+
 def to(t):
     return {'device': t.device, 'dtype': t.dtype}
 
@@ -134,10 +137,11 @@ def shift(x):
 class RelativePositionalEncoding(nn.Module):
     def __init__(self, dim, heads, length):
         super().__init__()
+        self.scale = dim ** -0.5
         self.weights = nn.Parameter(torch.zeros(length, heads, dim))
 
     def forward(self, q):
-        enc = torch.einsum('bhnid,jhd->bhnij', q, self.weights)
+        enc = torch.einsum('bhnid,jhd->bhnij', q, self.weights) * self.scale
         return shift(enc)
 
 # local attention
@@ -286,22 +290,39 @@ class KmeansAttention(nn.Module):
 
 # feedforward
 
-class FeedForward(nn.Module):
-    def __init__(self, dim, mult = 4):
-        super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(dim, dim * mult, bias = False),
-            nn.LeakyReLU(inplace=True),
-            nn.Linear(dim * mult, dim, bias = False)
-        )
-
+class GELU_(nn.Module):
     def forward(self, x):
-        return self.net(x)
+        return 0.5 * x * (1 + torch.tanh(math.sqrt(2 / math.pi) * (x + 0.044715 * torch.pow(x, 3))))
+
+GELU = nn.GELU if hasattr(nn, 'GELU') else GELU_
+
+class FeedForward(nn.Module):
+    def __init__(self, dim, mult = 4, dropout = 0., activation = None, glu = False):
+        super().__init__()
+        activation = default(activation, GELU)
+
+        self.glu = glu
+        self.w1 = nn.Linear(dim, dim * mult * (2 if glu else 1))
+        self.act = activation()
+        self.dropout = nn.Dropout(dropout)
+        self.w2 = nn.Linear(dim * mult, dim)
+
+    def forward(self, x, **kwargs):
+        if not self.glu:
+            x = self.w1(x)
+            x = self.act(x)
+        else:
+            x, v = self.w1(x).chunk(2, dim=-1)
+            x = self.act(x) * v
+
+        x = self.dropout(x)
+        x = self.w2(x)
+        return x
 
 # self attention
 
 class SelfAttention(nn.Module):
-    def __init__(self,  dim, depth, max_seq_len, heads, local_attn_heads, window_size, causal = False):
+    def __init__(self,  dim, depth, max_seq_len, heads, local_attn_heads, window_size, causal = False, attn_dropout = 0., dropout = 0.):
         super().__init__()
         assert (dim % heads) == 0, 'hidden dimension must be divisible by number of heads'
         assert (max_seq_len % window_size) == 0, 'maximum sequence length must be divisible by the target window size'
@@ -318,14 +339,16 @@ class SelfAttention(nn.Module):
         num_clusters = max_seq_len // window_size
 
         if self.local_attn_heads > 0:
-            self.local_attn = LocalAttention(window_size // 2, local_attn_heads, head_dim, causal = True, shared_qk = True)
+            self.local_attn = LocalAttention(window_size // 2, local_attn_heads, head_dim, causal = True, shared_qk = True, dropout = attn_dropout)
 
         if self.global_attn_heads > 0:
             num_clusters = max_seq_len // window_size
-            self.global_attn = KmeansAttention(num_clusters, window_size, self.global_attn_heads, head_dim, causal = causal)
+            self.global_attn = KmeansAttention(num_clusters, window_size, self.global_attn_heads, head_dim, causal = causal, dropout = attn_dropout)
 
         self.to_qkv = nn.Linear(dim, dim * 2, bias = False)
         self.to_out = nn.Linear(dim, dim, bias = False)
+
+        self.dropout = nn.Dropout(dropout)
 
     def forward(self, x):
         b, t, e, h = *x.shape, self.heads
@@ -347,15 +370,16 @@ class SelfAttention(nn.Module):
 
         out = torch.cat(out, dim=1)
         out = out.reshape(b, h, t, -1).transpose(1, 2).reshape(b, t, -1)
-        return self.to_out(out)
+        out = self.to_out(out)
+        return self.dropout(out)
 
 class RoutingTransformer(nn.Module):
-    def __init__(self, dim, depth, max_seq_len, heads = 8, window_size = 64, causal = False, attn_dropout = 0., ff_dropout = 0., attn_layer_dropout = 0., n_local_attn_heads = 0):
+    def __init__(self, dim, depth, max_seq_len, heads = 8, window_size = 64, causal = False, attn_dropout = 0., ff_dropout = 0., attn_layer_dropout = 0., n_local_attn_heads = 0, ff_glu = False):
         super().__init__()
         layers = []
         for ind in range(depth):
-            attn = SelfAttention(dim, depth, max_seq_len, heads, n_local_attn_heads, window_size, causal = causal)
-            ff = FeedForward(dim)
+            attn = SelfAttention(dim, depth, max_seq_len, heads, n_local_attn_heads, window_size, causal = causal, attn_dropout = attn_dropout, dropout = attn_layer_dropout)
+            ff = FeedForward(dim, dropout = ff_dropout, glu = ff_glu)
 
             attn = PreNorm(dim, attn)
             ff = PreNorm(dim, ff)
@@ -376,7 +400,7 @@ class RoutingTransformerLM(nn.Module):
         self.max_seq_len = max_seq_len
         self.token_emb = nn.Embedding(num_tokens, dim)
         self.pos_emb = AbsolutePositionalEmbedding(dim, max_seq_len)
-        self.routing_transformer = RoutingTransformer(dim, depth, max_seq_len, heads = heads, window_size = window_size, causal = causal, ff_dropout = ff_dropout, attn_dropout = attn_dropout, attn_layer_dropout = attn_layer_dropout, n_local_attn_heads = n_local_attn_heads)
+        self.routing_transformer = RoutingTransformer(dim, depth, max_seq_len, heads = heads, window_size = window_size, causal = causal, ff_dropout = ff_dropout, attn_dropout = attn_dropout, attn_layer_dropout = attn_layer_dropout, n_local_attn_heads = n_local_attn_heads, ff_glu = ff_glu)
         self.out = nn.Linear(dim, num_tokens)
 
     def forward(self, x, **kwargs):
