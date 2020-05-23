@@ -146,7 +146,7 @@ class RelativePositionalEmbedding(nn.Module):
         self.weights = nn.Parameter(torch.zeros(length, heads, dim))
 
     def forward(self, q):
-        emb = torch.einsum('bhnid,jhd->bhnij', q, self.weights) * self.scale
+        emb = torch.einsum('bhnid,jhd->bhnij', q, self.weights.type(q.dtype)) * self.scale
         return shift(emb)
 
 # local attention
@@ -271,7 +271,7 @@ class KmeansAttention(nn.Module):
         qk, v = map(lambda x: x.reshape(b, h, num_clusters, wsz, d), (qk, v))
 
         q = qk
-        k = F.normalize(qk, 2, dim=-1)
+        k = F.normalize(qk, 2, dim=-1).type(qk.dtype)
 
         dots = torch.einsum('bhnid,bhnjd->bhnij', q, k) * (d ** -0.5)
         dots = dots + self.rel_pos(q)
@@ -287,7 +287,7 @@ class KmeansAttention(nn.Module):
         dots.masked_fill_(mask, TOKEN_SELF_ATTN_VALUE)
         del mask
 
-        dots = F.softmax(dots, dim=-1)
+        dots = dots.softmax(dim=-1)
         dots = self.dropout(dots)
 
         bo = torch.einsum('bhcij,bhcjd->bhcid', dots, v)
