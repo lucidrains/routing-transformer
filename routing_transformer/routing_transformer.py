@@ -245,6 +245,9 @@ class KmeansAttention(nn.Module):
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, qk, v, **kwargs):
+        b, h, t, d, wsz, device = *qk.shape, self.window_size, qk.device
+        num_clusters = t // wsz
+
         with torch.no_grad():
             k = F.normalize(qk, dim=-1)
             reset = not self.initted
@@ -253,20 +256,17 @@ class KmeansAttention(nn.Module):
                 self.initted[0] = True
 
             means, dists, se = kmeans(k, self.means, training=self.training, reset=reset)
-            indices, means = distribution(self.window_size, dists, means)
+            indices, means = distribution(wsz, dists, means)
 
             if self.training:
                 self.means.copy_(means)
 
             indices = indices.contiguous().view(*indices.size()[:2], -1)
         
-        b, h, t, d, device = *qk.shape, qk.device
-        num_clusters = t // self.window_size
-        
         qk = batched_index_select(qk, indices)
         v = batched_index_select(v, indices)
 
-        qk, v = map(lambda x: x.reshape(b, h, num_clusters, self.window_size, d), (qk, v))
+        qk, v = map(lambda x: x.reshape(b, h, num_clusters, wsz, d), (qk, v))
 
         q = qk
         k = F.normalize(qk, 2, dim=-1)
@@ -277,11 +277,11 @@ class KmeansAttention(nn.Module):
         mask_value = max_neg_value(dots)
 
         if self.causal:
-            mask = torch.ones(self.window_size, self.window_size, device=device).byte().triu_(1).bool()
+            mask = torch.ones(wsz, wsz, device=device).byte().triu_(1).bool()
             dots.masked_fill_(mask, mask_value)
             del mask
 
-        mask = torch.eye(self.window_size, device=dots.device).bool()
+        mask = torch.eye(wsz, device=dots.device).bool()
         dots.masked_fill_(mask, TOKEN_SELF_ATTN_VALUE)
         del mask
 
