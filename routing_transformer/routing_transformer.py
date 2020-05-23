@@ -12,6 +12,9 @@ TOKEN_SELF_ATTN_VALUE = -5e4
 def default(val, default_val):
     return default_val if val is None else val
 
+def max_neg_value(tensor):
+    return -torch.finfo(tensor.dtype).max
+
 def to(t):
     return {'device': t.device, 'dtype': t.dtype}
 
@@ -113,7 +116,7 @@ class PreNorm(nn.ModuleList):
         x = self.norm(x)
         return self.fn(x)
 
-# positional encodings
+# positional embeddings
 
 class AbsolutePositionalEmbedding(nn.Module):
     def __init__(self, dim, max_seq_len):
@@ -134,15 +137,15 @@ def shift(x):
     shifted = torch.cat([x, zero_pad], -1).view(*_, -1, l)
     return shifted[..., :i, i - 1:]
 
-class RelativePositionalEncoding(nn.Module):
+class RelativePositionalEmbedding(nn.Module):
     def __init__(self, dim, heads, length):
         super().__init__()
         self.scale = dim ** -0.5
         self.weights = nn.Parameter(torch.zeros(length, heads, dim))
 
     def forward(self, q):
-        enc = torch.einsum('bhnid,jhd->bhnij', q, self.weights) * self.scale
-        return shift(enc)
+        emb = torch.einsum('bhnid,jhd->bhnij', q, self.weights) * self.scale
+        return shift(emb)
 
 # local attention
 
@@ -157,7 +160,7 @@ class LocalAttention(nn.Module):
         self.shared_qk = shared_qk
 
         self.heads = heads
-        self.rel_pos = RelativePositionalEncoding(head_dim, heads, bucket_size * 2)
+        self.rel_pos = RelativePositionalEmbedding(head_dim, heads, bucket_size * 2)
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, q, k, v, input_mask = None):
@@ -192,7 +195,7 @@ class LocalAttention(nn.Module):
         rel_attn = self.rel_pos(bq.view(-1, h, *bq.shape[1:])).reshape_as(dots)
         dots = dots + rel_attn
 
-        mask_value = float('-inf')
+        mask_value = max_neg_value(dots)
 
         if shared_qk:
             mask = bq_t[:, :, :, None] == bq_k[:, :, None, :]
@@ -234,7 +237,7 @@ class KmeansAttention(nn.Module):
         self.window_size = window_size
         self.causal = causal
 
-        self.rel_pos = RelativePositionalEncoding(head_dim, num_heads, window_size)
+        self.rel_pos = RelativePositionalEmbedding(head_dim, num_heads, window_size)
 
         self.register_buffer('means', torch.zeros(num_heads, num_clusters, head_dim))
         self.register_buffer('initted', torch.tensor(True))
@@ -266,21 +269,23 @@ class KmeansAttention(nn.Module):
         qk, v = map(lambda x: x.reshape(b, h, num_clusters, self.window_size, d), (qk, v))
 
         q = qk
-        k = F.normalize(qk, dim=-1)
+        k = F.normalize(qk, 2, dim=-1)
 
         dots = torch.einsum('bhnid,bhnjd->bhnij', q, k) * (d ** -0.5)
         dots = dots + self.rel_pos(q)
 
+        mask_value = max_neg_value(dots)
+
         if self.causal:
             mask = torch.ones(self.window_size, self.window_size, device=device).byte().triu_(1).bool()
-            dots.masked_fill_(mask, float('-inf'))
+            dots.masked_fill_(mask, mask_value)
             del mask
 
         mask = torch.eye(self.window_size, device=dots.device).bool()
         dots.masked_fill_(mask, TOKEN_SELF_ATTN_VALUE)
         del mask
 
-        dots = F.softmax(dots, dim=-1)  # [b, h, c, q, k]
+        dots = F.softmax(dots, dim=-1)
         dots = self.dropout(dots)
 
         bo = torch.einsum('bhcij,bhcjd->bhcid', dots, v)
@@ -342,7 +347,6 @@ class SelfAttention(nn.Module):
             self.local_attn = LocalAttention(window_size // 2, local_attn_heads, head_dim, causal = True, shared_qk = True, dropout = attn_dropout)
 
         if self.global_attn_heads > 0:
-            num_clusters = max_seq_len // window_size
             self.global_attn = KmeansAttention(num_clusters, window_size, self.global_attn_heads, head_dim, causal = causal, dropout = attn_dropout)
 
         self.to_qkv = nn.Linear(dim, dim * 2, bias = False)
@@ -376,9 +380,15 @@ class SelfAttention(nn.Module):
 class RoutingTransformer(nn.Module):
     def __init__(self, dim, depth, max_seq_len, heads = 8, window_size = 64, causal = False, attn_dropout = 0., ff_dropout = 0., attn_layer_dropout = 0., n_local_attn_heads = 0, ff_glu = False):
         super().__init__()
+        if type(n_local_attn_heads) is not tuple:
+            n_local_attn_heads = tuple([n_local_attn_heads] * depth)
+
+        assert len(n_local_attn_heads) == depth, 'local attention heads tuple must have the same length as the depth'
+        assert all([local_heads <= heads for local_heads in n_local_attn_heads]), 'number of local attn heads must be less than the maximum number of heads'
+
         layers = []
-        for ind in range(depth):
-            attn = SelfAttention(dim, depth, max_seq_len, heads, n_local_attn_heads, window_size, causal = causal, attn_dropout = attn_dropout, dropout = attn_layer_dropout)
+        for ind, local_heads in zip(range(depth), n_local_attn_heads):
+            attn = SelfAttention(dim, depth, max_seq_len, heads, local_heads, window_size, causal = causal, attn_dropout = attn_dropout, dropout = attn_layer_dropout)
             ff = FeedForward(dim, dropout = ff_dropout, glu = ff_glu)
 
             attn = PreNorm(dim, attn)
@@ -387,6 +397,7 @@ class RoutingTransformer(nn.Module):
             layers.append(nn.ModuleList([attn, ff]))
 
         self.layers = nn.ModuleList(layers)
+        self.pad_to_window_size = window_size
 
     def forward(self, x, **kwargs):
         for layer, ff in self.layers:
