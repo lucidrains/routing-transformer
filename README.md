@@ -2,6 +2,8 @@
 
 <img src="./routing_attention.png" width="500px"></img>
 
+[![PyPI version](https://badge.fury.io/py/routing-transformer.svg)](https://badge.fury.io/py/routing-transformer)
+
 A fully featured implementation of <a href="https://arxiv.org/pdf/2003.05997.pdf">Routing Transformer</a>. The paper proposes using k-nearest neighbors to route queries / keys into clusters for attention with one another.
 
 ### Install
@@ -39,7 +41,7 @@ A simple transformer
 import torch
 from routing_transformer import RoutingTransformer
 
-model = RoutingTransformerLM(
+model = RoutingTransformer(
     dim = 512,
     heads = 8,
     depth = 12,
