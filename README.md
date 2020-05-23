@@ -4,7 +4,7 @@
 
 [![PyPI version](https://badge.fury.io/py/routing-transformer.svg)](https://badge.fury.io/py/routing-transformer)
 
-A fully featured implementation of <a href="https://arxiv.org/pdf/2003.05997.pdf">Routing Transformer</a>. The paper proposes using k-nearest neighbors to route queries / keys into clusters for attention with one another.
+A fully featured implementation of <a href="https://arxiv.org/pdf/2003.05997.pdf">Routing Transformer</a>. The paper proposes using k-nearest neighbors to route similar queries / keys into the same cluster for attention.
 
 ### Install
 
@@ -28,7 +28,8 @@ model = RoutingTransformerLM(
     max_seq_len = 8192,
     causal = True,          # auto-regressive or not
     window_size = 128,      # target window size of each cluster
-    n_local_attn_heads = 4  # number of local attention heads
+    n_local_attn_heads = 4, # number of local attention heads
+    reversible = True,      # reversible networks for memory savings, from Reformer
 ).cuda()
 
 x = torch.randint(0, 20000, (1, 8192)).long().cuda()
@@ -75,5 +76,15 @@ Special thanks to <a href="https://github.com/AranKomat">Aran Komatsuzaki</a> fo
     author  = {Noam Shazeer},
     year    = {2020},
     url     = {https://arxiv.org/abs/2002.05202}    
+}
+```
+
+```bibtex
+@inproceedings{kitaev2020reformer,
+    title       = {Reformer: The Efficient Transformer},
+    author      = {Nikita Kitaev and Lukasz Kaiser and Anselm Levskaya},
+    booktitle   = {International Conference on Learning Representations},
+    year        = {2020},
+    url         = {https://openreview.net/forum?id=rkgNKkHtvB}
 }
 ```

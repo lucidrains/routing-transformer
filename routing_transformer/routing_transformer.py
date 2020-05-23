@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from functools import partial
+from routing_transformer.reversible import ReversibleSequence, SequentialSequence
 
 # constants
 
@@ -416,7 +417,7 @@ def register_kmeans_update_on_backwards(module):
     module.register_backward_hook(hook)
 
 class RoutingTransformer(nn.Module):
-    def __init__(self, dim, depth, max_seq_len, heads = 8, window_size = 64, causal = False, attn_dropout = 0., ff_dropout = 0., attn_layer_dropout = 0., n_local_attn_heads = 0, ff_glu = False):
+    def __init__(self, dim, depth, max_seq_len, heads = 8, window_size = 64, causal = False, attn_dropout = 0., ff_dropout = 0., attn_layer_dropout = 0., n_local_attn_heads = 0, ff_glu = False, reversible = False):
         super().__init__()
         if type(n_local_attn_heads) is not tuple:
             n_local_attn_heads = tuple([n_local_attn_heads] * depth)
@@ -424,7 +425,7 @@ class RoutingTransformer(nn.Module):
         assert len(n_local_attn_heads) == depth, 'local attention heads tuple must have the same length as the depth'
         assert all([local_heads <= heads for local_heads in n_local_attn_heads]), 'number of local attn heads must be less than the maximum number of heads'
 
-        layers = []
+        layers = nn.ModuleList([])
         for ind, local_heads in zip(range(depth), n_local_attn_heads):
             attn = SelfAttention(dim, depth, max_seq_len, heads, local_heads, window_size, causal = causal, attn_dropout = attn_dropout, dropout = attn_layer_dropout)
             ff = FeedForward(dim, dropout = ff_dropout, glu = ff_glu)
@@ -434,24 +435,23 @@ class RoutingTransformer(nn.Module):
 
             layers.append(nn.ModuleList([attn, ff]))
 
-        self.layers = nn.ModuleList(layers)
+        execute_type = ReversibleSequence if reversible else SequentialSequence
+        self.layers = execute_type(layers)
         self.pad_to_window_size = window_size
 
         register_kmeans_update_on_backwards(self)        
 
     def forward(self, x, **kwargs):
-        for layer, ff in self.layers:
-            x = layer(x) + x
-            x = ff(x) + x
+        x = self.layers(x, **kwargs)
         return x
 
 class RoutingTransformerLM(nn.Module):
-    def __init__(self, num_tokens, dim, depth, max_seq_len, heads = 8, window_size = 64, causal = False, attn_dropout = 0., ff_dropout = 0., attn_layer_dropout = 0., ff_mult = 4, ff_activation = None, ff_glu = False, post_attn_dropout = 0., return_embeddings = False, n_local_attn_heads = 0):
+    def __init__(self, num_tokens, dim, depth, max_seq_len, heads = 8, window_size = 64, causal = False, attn_dropout = 0., ff_dropout = 0., attn_layer_dropout = 0., ff_mult = 4, ff_activation = None, ff_glu = False, post_attn_dropout = 0., return_embeddings = False, n_local_attn_heads = 0, reversible = False):
         super().__init__()
         self.max_seq_len = max_seq_len
         self.token_emb = nn.Embedding(num_tokens, dim)
         self.pos_emb = AbsolutePositionalEmbedding(dim, max_seq_len)
-        self.routing_transformer = RoutingTransformer(dim, depth, max_seq_len, heads = heads, window_size = window_size, causal = causal, ff_dropout = ff_dropout, attn_dropout = attn_dropout, attn_layer_dropout = attn_layer_dropout, n_local_attn_heads = n_local_attn_heads, ff_glu = ff_glu)
+        self.routing_transformer = RoutingTransformer(dim, depth, max_seq_len, heads = heads, window_size = window_size, causal = causal, ff_dropout = ff_dropout, attn_dropout = attn_dropout, attn_layer_dropout = attn_layer_dropout, n_local_attn_heads = n_local_attn_heads, ff_glu = ff_glu, reversible = reversible)
         self.out = nn.Linear(dim, num_tokens)
 
     def forward(self, x, **kwargs):
