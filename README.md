@@ -26,7 +26,7 @@ model = RoutingTransformerLM(
     heads = 8,
     depth = 12,
     max_seq_len = 8192,
-    causal = True,	        # auto-regressive or not
+    causal = True,          # auto-regressive or not
     window_size = 128,      # target window size of each cluster
     n_local_attn_heads = 4  # number of local attention heads
 ).cuda()
