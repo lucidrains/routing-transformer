@@ -12,6 +12,15 @@ TOKEN_SELF_ATTN_VALUE = -5e4
 def default(val, default_val):
     return default_val if val is None else val
 
+def is_empty(t):
+    return t.nelement() == 0
+
+def ema_inplace(moving_avg, new, decay):
+    if is_empty(moving_avg):
+        moving_avg.data.copy_(new)
+        return
+    moving_avg.data.mul_(decay).add_(1 - decay, new)
+
 def max_neg_value(tensor):
     return -torch.finfo(tensor.dtype).max
 
@@ -233,18 +242,36 @@ class LocalAttention(nn.Module):
 # kmeans attention
 
 class KmeansAttention(nn.Module):
-    def __init__(self, num_clusters, window_size, num_heads, head_dim, causal = False, dropout = 0.):
+    def __init__(self, num_clusters, window_size, num_heads, head_dim, causal = False, dropout = 0., ema_decay = 0.8):
         super().__init__()
         self.num_heads = num_heads
+        self.num_clusters = num_clusters
+        self.head_dim = head_dim
+
         self.window_size = window_size
         self.causal = causal
 
         self.rel_pos = RelativePositionalEmbedding(head_dim, num_heads, window_size)
 
+        self.ema_decay = ema_decay
         self.register_buffer('means', torch.zeros(num_heads, num_clusters, head_dim))
+        self.register_buffer('new_means', torch.empty(num_heads, num_clusters, head_dim))
         self.register_buffer('initted', torch.tensor(True))
 
         self.dropout = nn.Dropout(dropout)
+
+    def update_kmeans(self, new_means = None):
+        new_means = default(new_means, self.new_means)
+        assert not is_empty(new_means), 'new kmeans has not been supplied'
+
+        first = not self.initted
+        ema_inplace(self.means, new_means, 0. if first else self.ema_decay)
+
+        if first:
+            self.initted[0] = True
+
+        if not is_empty(self.new_means):
+            self.new_means = torch.empty_like(self.new_means)
 
     def forward(self, qk, v, **kwargs):
         b, h, t, d, wsz, device = *qk.shape, self.window_size, qk.device
@@ -254,14 +281,12 @@ class KmeansAttention(nn.Module):
             k = F.normalize(qk, dim=-1)
             reset = not self.initted
 
-            if reset:
-                self.initted[0] = True
-
             means, dists, se = kmeans(k, self.means, training=self.training, reset=reset)
             indices = distribution(dists, wsz)
 
             if self.training:
-                self.means.copy_(means)
+                self.new_means.copy_(means)
+                self.update_kmeans(means)
 
             indices = indices.contiguous().view(*indices.size()[:2], -1)
         
