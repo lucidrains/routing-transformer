@@ -1,12 +1,14 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import math
 from functools import partial
 from routing_transformer.reversible import ReversibleSequence, SequentialSequence
 
 # constants
 
 TOKEN_SELF_ATTN_VALUE = -5e4
+KMEAN_INIT_ITERS = 10
 
 # helper functions
 
@@ -79,14 +81,14 @@ def kmeans_iter(x, means, num_clusters, compute_se_):  # hard k-means single ite
     se = compute_se(x, means) if compute_se_ else None
     return means, se
 
-def kmeans(x, means, training=True, reset=False, compute_se=False):
+def kmeans(x, means, training=True, init=False, compute_se=False):
     b, *_, d = x.shape
     num_clusters = means.shape[1]
 
     max_iters = 1 if training else 0
     
-    if reset:
-        max_iters = max(10, max_iters)
+    if init:
+        max_iters = max(KMEAN_INIT_ITERS, max_iters)
         means = x.transpose(0, 1).contiguous().view(t, -1, d)
         means = means[:, torch.randperm(num_clusters, device=x.device)[:num_clusters]]
 
@@ -307,9 +309,8 @@ class KmeansAttention(nn.Module):
 
         with torch.no_grad():
             k = F.normalize(qk, dim=-1)
-            reset = not self.initted
 
-            means, dists, se = kmeans(k, self.means, training=self.training, reset=reset)
+            means, dists, se = kmeans(k, self.means, training=self.training, init=not self.initted)
             indices = distribution(dists, wsz)
 
             if self.training:
@@ -445,7 +446,7 @@ class RoutingTransformer(nn.Module):
 
         for ind, local_heads in zip(range(depth), n_local_attn_heads):
             attn = SelfAttention(dim, depth, max_seq_len, heads, local_heads, window_size, causal = causal, attn_dropout = attn_dropout, dropout = attn_layer_dropout)
-            ff = Chunk(ff_chunks, FeedForward(dim, dropout = ff_dropout, glu = ff_glu))
+            ff = Chunk(ff_chunks, FeedForward(dim, dropout = ff_dropout, glu = ff_glu), along_dim=1)
 
             attn, ff = map(fn_wrapper, (attn, ff))
             layers.append(nn.ModuleList([attn, ff]))
