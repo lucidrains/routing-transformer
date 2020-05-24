@@ -272,7 +272,7 @@ def register_kmeans_update_on_backwards(module):
     return module.register_backward_hook(hook)
 
 class KmeansAttention(nn.Module):
-    def __init__(self, num_clusters, window_size, num_heads, head_dim, causal = False, dropout = 0., ema_decay = 0.8):
+    def __init__(self, num_clusters, window_size, num_heads, head_dim, causal = False, dropout = 0., ema_decay = 0.):
         super().__init__()
         self.num_heads = num_heads
         self.num_clusters = num_clusters
