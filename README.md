@@ -26,10 +26,16 @@ model = RoutingTransformerLM(
     heads = 8,
     depth = 12,
     max_seq_len = 8192,
-    causal = True,          # auto-regressive or not
-    window_size = 128,      # target window size of each cluster
-    n_local_attn_heads = 4, # number of local attention heads
-    reversible = True,      # reversible networks for memory savings, from Reformer
+    causal = True,           # auto-regressive or not
+    attn_dropout = 0.1,      # dropout after attention
+    attn_layer_dropout = 0., # dropout after self attention layer
+    ff_dropout = 0.1,        # feedforward dropout
+    layer_dropout = 0.,      # layer dropout
+    window_size = 128,       # target window size of each cluster
+    n_local_attn_heads = 4,  # number of local attention heads
+    reversible = True,       # reversible networks for memory savings, from Reformer paper
+    ff_chunks = 10,          # feed forward chunking, from Reformer paper
+    ff_glu = True,           # use GLU variant in feedforward
 ).cuda()
 
 x = torch.randint(0, 20000, (1, 8192)).long().cuda()
@@ -86,5 +92,15 @@ Special thanks to <a href="https://github.com/AranKomat">Aran Komatsuzaki</a> fo
     booktitle   = {International Conference on Learning Representations},
     year        = {2020},
     url         = {https://openreview.net/forum?id=rkgNKkHtvB}
+}
+```
+
+```bibtex
+@inproceedings{fan2020reducing,
+    title     ={Reducing Transformer Depth on Demand with Structured Dropout},
+    author    ={Angela Fan and Edouard Grave and Armand Joulin},
+    booktitle ={International Conference on Learning Representations},
+    year      ={2020},
+    url       ={https://openreview.net/forum?id=SylO2yStDr}
 }
 ```
