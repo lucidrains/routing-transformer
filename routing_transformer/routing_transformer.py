@@ -362,7 +362,7 @@ class Kmeans(nn.Module):
 # kmeans attention class
 
 class KmeansAttention(nn.Module):
-    def __init__(self, num_clusters, window_size, num_heads, head_dim, causal = False, dropout = 0., ema_decay = 0.999, commitment = 1e-4, use_routing_matrix = False):
+    def __init__(self, num_clusters, window_size, num_heads, head_dim, causal = False, dropout = 0., ema_decay = 0.999, commitment = 1e-4):
         super().__init__()
         self.num_heads = num_heads
         self.num_clusters = num_clusters
@@ -371,10 +371,8 @@ class KmeansAttention(nn.Module):
         self.window_size = window_size
         self.causal = causal
 
-        self.router = nn.Parameter(torch.randn(num_heads, head_dim, head_dim)) if use_routing_matrix else None
-
-        self.rel_pos = RelativePositionalEmbedding(head_dim, num_heads, window_size)
         self.kmeans = Kmeans(num_heads, head_dim, num_clusters, ema_decay, commitment)
+        self.rel_pos = RelativePositionalEmbedding(head_dim, num_heads, window_size)
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, qk, v, input_mask = None):
@@ -383,9 +381,7 @@ class KmeansAttention(nn.Module):
 
         wsz = min(wsz, t)
 
-        k_routing = torch.einsum('bhtd,hdr->bhtr', qk, self.router) if self.router is not None else qk
         k_routing = F.normalize(qk, dim=-1)
-
         indices, commitment_loss = self.kmeans(k_routing, wsz)
         
         qk = batched_index_select(qk, indices)
