@@ -2,7 +2,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import math
-from functools import partial
+from operator import mul
+from functools import partial, reduce
 from routing_transformer.reversible import ReversibleSequence, SequentialSequence
 
 # constants
@@ -180,16 +181,66 @@ class RelativePositionalEmbedding(nn.Module):
         emb = torch.einsum('bhnid,jhd->bhnij', q, self.weights.type(q.dtype)) * self.scale
         return shift(emb)
 
+class AxialPositionalEmbedding(nn.Module):
+    def __init__(self, dim, max_seq_len, axial_shape = ()):
+        super().__init__()
+        assert reduce(mul, axial_shape, 1) == max_seq_len, 'axial position shape must multiply up to max sequence length'
+
+        self.dim = dim
+        self.seq_len = max_seq_len
+        self.shape = axial_shape
+
+        self.weights = ParameterList(self, 'weights', len(axial_shape))
+
+        for ind, shape in enumerate(self.shape):
+            ax_shape = [1] * len(self.shape)
+            ax_shape[ind] = shape
+            ax_shape = (1, *ax_shape, dim)
+            ax_emb = nn.Parameter(torch.zeros(ax_shape).normal_(0, 1))
+            self.weights.append(ax_emb)
+
+    def forward(self, x):
+        b, t, e = x.shape
+        embs = []
+
+        for ax_emb in self.weights.to_list():
+            expand_shape = (b, *self.shape, self.dim)
+            emb = ax_emb.expand(expand_shape).reshape(b, self.seq_len, self.dim)
+            embs.append(emb)
+
+        pos_emb = sum(embs)
+        return pos_emb[:, :t].to(x)
+
+# a mock parameter list object until below issue is resolved
+# https://github.com/pytorch/pytorch/issues/36035
+class ParameterList(object):
+    def __init__(self, kls, prefix, length):
+        self.ind = 0
+        self.kls = kls
+        self.prefix = prefix
+        self.length = length
+
+    def _keyname(self, prefix, ind):
+        return f'{prefix}_{ind}'
+
+    def append(self, x):
+        setattr(self.kls, self._keyname(self.prefix, self.ind), x)
+        self.ind += 1
+
+    def to_list(self):
+        return [getattr(self.kls, self._keyname(self.prefix, i)) for i in range(self.length)]
+
 # local attention
 
 class LocalAttention(nn.Module):
-    def __init__(self, bucket_size, heads, head_dim, causal = False, look_backward = 1, look_forward = 0, dropout = 0., shared_qk = False):
+    def __init__(self, bucket_size, heads, head_dim, causal = False, look_backward = 1, look_forward = None, dropout = 0., shared_qk = False):
         super().__init__()
-        assert not (causal and look_forward > 0), 'you cannot look forward if causal'
+        self.look_forward = default(look_forward, 0 if causal else 1)
+        assert not (causal and self.look_forward > 0), 'you cannot look forward if causal'
+
         self.bucket_size = bucket_size
         self.causal = causal
         self.look_backward = look_backward
-        self.look_forward = look_forward
         self.shared_qk = shared_qk
 
         self.heads = heads
@@ -281,6 +332,8 @@ class KmeansAttention(nn.Module):
         self.window_size = window_size
         self.causal = causal
 
+        self.router = nn.Parameter(torch.randn(num_heads, head_dim, head_dim))
+
         self.rel_pos = RelativePositionalEmbedding(head_dim, num_heads, window_size)
 
         self.ema_decay = ema_decay
@@ -308,9 +361,10 @@ class KmeansAttention(nn.Module):
         num_clusters = t // wsz
 
         with torch.no_grad():
-            k = F.normalize(qk, dim=-1)
+            k_routing = torch.einsum('bhtd,hdr->bhtr', qk, self.router)
+            k_routing = F.normalize(qk, dim=-1)
 
-            means, dists, se = kmeans(k, self.means, training=self.training, init=not self.initted)
+            means, dists, se = kmeans(k_routing, self.means, training=self.training, init=not self.initted)
             indices = distribution(dists, wsz)
 
             if self.training:
@@ -466,12 +520,12 @@ class RoutingTransformerLM(nn.Module):
         super().__init__()
         self.max_seq_len = max_seq_len
         self.token_emb = nn.Embedding(num_tokens, dim)
-        self.pos_emb = AbsolutePositionalEmbedding(dim, max_seq_len)
+        self.axial_pos_emb = AxialPositionalEmbedding(dim, max_seq_len, axial_shape=(max_seq_len // window_size, window_size))
         self.routing_transformer = RoutingTransformer(dim, depth, max_seq_len, heads = heads, window_size = window_size, causal = causal, ff_dropout = ff_dropout, attn_dropout = attn_dropout, attn_layer_dropout = attn_layer_dropout, layer_dropout = layer_dropout, n_local_attn_heads = n_local_attn_heads, ff_glu = ff_glu, reversible = reversible, ff_chunks = ff_chunks, kmeans_ema_decay = kmeans_ema_decay)
         self.out = nn.Linear(dim, num_tokens) if not return_embeddings else identity
 
     def forward(self, x, **kwargs):
         x = self.token_emb(x)
-        x = x + self.pos_emb(x).type(x.type())
+        x = x + self.axial_pos_emb(x)
         x = self.routing_transformer(x, **kwargs)
         return self.out(x)
