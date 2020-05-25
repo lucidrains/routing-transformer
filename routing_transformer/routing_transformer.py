@@ -16,18 +16,6 @@ KMEAN_INIT_ITERS = 10
 def identity(x, *args, **kwargs):
     return x
 
-def merge_dims(ind_from, ind_to, tensor):
-    shape = list(tensor.shape)
-    arr_slice = slice(ind_from, ind_to + 1)
-    shape[arr_slice] = [reduce(mul, shape[arr_slice])]
-    return tensor.reshape(*shape)
-
-def expand_dim(t, dim, k):
-    t = t.unsqueeze(dim)
-    expand_shape = [-1] * len(t.shape)
-    expand_shape[dim] = k
-    return t.expand(*expand_shape)
-
 def default(val, default_val):
     return default_val if val is None else val
 
@@ -47,11 +35,17 @@ def batched_index_select(values, indices):
     last_dim = values.shape[-1]
     return values.gather(2, expand_dim(indices, -1, last_dim))
 
-def ema_inplace(moving_avg, new, decay):
-    if is_empty(moving_avg):
-        moving_avg.data.copy_(new)
-        return
-    moving_avg.data.mul_(decay).add_(1 - decay, new)
+def merge_dims(ind_from, ind_to, tensor):
+    shape = list(tensor.shape)
+    arr_slice = slice(ind_from, ind_to + 1)
+    shape[arr_slice] = [reduce(mul, shape[arr_slice])]
+    return tensor.reshape(*shape)
+
+def expand_dim(t, dim, k):
+    t = t.unsqueeze(dim)
+    expand_shape = [-1] * len(t.shape)
+    expand_shape[dim] = k
+    return t.expand(*expand_shape)
 
 def scatter_mean(src, t, index, dim, eps = 1e-5):
     numer = src.scatter_add(dim, index, t)
@@ -70,6 +64,12 @@ def split_at_index(dim, index, t):
     l = (*pre_slices, slice(None, index))
     r = (*pre_slices, slice(index, None))
     return t[l], t[r]
+
+def ema_inplace(moving_avg, new, decay):
+    if is_empty(moving_avg):
+        moving_avg.data.copy_(new)
+        return
+    moving_avg.data.mul_(decay).add_(1 - decay, new)
 
 # helper classes
 
@@ -495,7 +495,7 @@ class SelfAttention(nn.Module):
         has_local, has_global = map(lambda x: x.shape[1] > 0, (lqk, qk))
 
         out = []
-        total_loss = torch.zeros(1, device=x.device, dtype=x.dtype)
+        total_loss = torch.tensor(0., **to(x))
 
         if has_local:
             local_out = self.local_attn(lqk, lqk, lv, input_mask = input_mask)

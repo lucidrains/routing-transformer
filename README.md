@@ -39,8 +39,10 @@ model = RoutingTransformerLM(
 ).cuda()
 
 x = torch.randint(0, 20000, (1, 8192)).long().cuda()
-y, aux_loss = model(x) # (1, 8192, 20000)
-aux_loss.backward()    # add auxiliary loss to main loss before backprop
+input_mask = torch.ones_like(x).bool().cuda()
+
+y, aux_loss = model(x, input_mask = input_mask) # (1, 8192, 20000)
+aux_loss.backward() # add auxiliary loss to main loss before backprop
 ```
 
 A simple transformer
@@ -59,11 +61,21 @@ model = RoutingTransformer(
 ).cuda()
 
 x = torch.randn(1, 8192, 512).cuda()
-y, aux_loss = model(x) # (1, 8192, 512)
-aux_loss.backward()    # add auxiliary loss to main loss before backprop
+input_mask = torch.ones_like(x).bool().cuda()
+
+y, aux_loss = model(x, input_mask = input_mask) # (1, 8192, 512)
+aux_loss.backward() # add auxiliary loss to main loss before backprop
 ```
 
+## Kmeans Hyperparameters
 
+1. `kmeans_ema_decay = {defaults to 0.999}`
+
+This is the exponential moving average decay for updating the k-means. The lower this is, the faster the means will adjust, but at the cost of stability.
+
+2. `commitment_factor = {defaults to 1e-4}`
+
+The weight of the auxiliary loss that encourages tokens to get closer (commit) to the k-mean centroids that were chosen for them.
 
 ## Appreciation
 
