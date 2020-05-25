@@ -39,7 +39,8 @@ model = RoutingTransformerLM(
 ).cuda()
 
 x = torch.randint(0, 20000, (1, 8192)).long().cuda()
-model(x) # (1, 8192, 20000)
+y, aux_loss = model(x) # (1, 8192, 20000)
+aux_loss.backward()    # add auxiliary loss to main loss before backprop
 ```
 
 A simple transformer
@@ -58,8 +59,11 @@ model = RoutingTransformer(
 ).cuda()
 
 x = torch.randn(1, 8192, 512).cuda()
-model(x) # (1, 8192, 512)
+y, aux_loss = model(x) # (1, 8192, 512)
+aux_loss.backward()    # add auxiliary loss to main loss before backprop
 ```
+
+
 
 ## Appreciation
 

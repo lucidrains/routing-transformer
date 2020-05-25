@@ -33,13 +33,13 @@ def pad_sequence_left(seqs, value):
     return torch.stack([F.pad(s, (m - len(s), 0)) for s in seqs])
 
 class AutoregressiveWrapper(nn.Module):
-    def __init__(self, net, ignore_index = None, pad_value = 0, pad_left = True):
+    def __init__(self, net, ignore_index = None, pad_value = 0):
         super().__init__()
         assert isinstance(net, RoutingTransformerLM), 'generative trainer wrapper can only accept RoutingTransformerLM class'
         self.pad_value = pad_value
         self.ignore_index = default(ignore_index, pad_value)
 
-        self.net = Autopadder(net, pad_left = pad_left)
+        self.net = Autopadder(net)
         self.max_seq_len = net.max_seq_len
 
     @torch.no_grad()
@@ -62,13 +62,14 @@ class AutoregressiveWrapper(nn.Module):
         for _ in range(seq_len):
             x = out[:, -self.max_seq_len:]
             input_mask = input_mask[:, -self.max_seq_len:]
-            logits = self.net(x, input_mask=input_mask, **kwargs)[:, -1, :]
+            logits, _ = self.net(x, input_mask=input_mask, **kwargs)
+            logits = logits[:, -1, :]
             filtered_logits = filter_logits_fn(logits, thres = filter_thres)
             probs = F.softmax(filtered_logits / temperature, dim=-1)
             sample = torch.multinomial(probs, 1)
 
             out = torch.cat((out, sample), dim=-1)
-            input_mask = F.pad(input_mask, (0, 1), value=True)
+            input_mask = F.pad(input_mask, (1, 0), value=True)
             if eos_token is not None and (sample == eos_token).all():
                 break
 
@@ -100,7 +101,8 @@ class AutoregressiveWrapper(nn.Module):
             assert m.shape == x.shape[0:2], 'input mask must be the same shape as the input of the auto-regressive wrapper to automatically handle'
             kwargs.update(input_mask = m[:, :-1])
 
-        out = self.net(xi, **kwargs)
+        out, aux_loss = self.net(xi, **kwargs)
 
         loss = F.cross_entropy(out.transpose(1, 2), xo, ignore_index = self.ignore_index)
+        loss = loss + aux_loss
         return loss

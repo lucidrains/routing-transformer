@@ -22,6 +22,13 @@ def layer_drop(layers, prob):
     blocks = layers[:1] if len(blocks) == 0 else blocks
     return blocks
 
+def cast_return(ret):
+    if type(ret) is not tuple:
+        loss = torch.tensor(0., device=ret.device)
+        loss.requires_grad_()
+        return (ret, loss)
+    return ret
+
 # following example for saving and setting rng here https://pytorch.org/docs/stable/_modules/torch/utils/checkpoint.html
 class Deterministic(nn.Module):
     def __init__(self, net):
@@ -68,12 +75,15 @@ class ReversibleBlock(nn.Module):
         y1, y2 = None, None
 
         with torch.no_grad():
-            y1 = x1 + self.f(x2, record_rng=self.training, **f_args)
-            y2 = x2 + self.g(y1, record_rng=self.training, **g_args)
+            f_out, f_loss = cast_return(self.f(x2, record_rng=self.training, **f_args))
+            y1 = x1 + f_out
 
-        return torch.cat([y1, y2], dim=2)
+            g_out, g_loss = cast_return(self.g(y1, record_rng=self.training, **g_args))
+            y2 = x2 + g_out
 
-    def backward_pass(self, y, dy, f_args = {}, g_args = {}):
+        return torch.cat([y1, y2], dim=2), f_loss, g_loss
+
+    def backward_pass(self, y, dy, dl_f, dl_g, f_args = {}, g_args = {}):
         y1, y2 = torch.chunk(y, 2, dim=2)
         del y
 
@@ -82,8 +92,8 @@ class ReversibleBlock(nn.Module):
 
         with torch.enable_grad():
             y1.requires_grad = True
-            gy1 = self.g(y1, set_rng=True, **g_args)
-            torch.autograd.backward(gy1, dy2)
+            gy1, g_loss = cast_return(self.g(y1, set_rng=True, **g_args))
+            torch.autograd.backward((gy1, g_loss), (dy2, dl_g))
 
         with torch.no_grad():
             x2 = y2 - gy1
@@ -95,8 +105,8 @@ class ReversibleBlock(nn.Module):
 
         with torch.enable_grad():
             x2.requires_grad = True
-            fx2 = self.f(x2, set_rng=True, **f_args)
-            torch.autograd.backward(fx2, dx1, retain_graph=True)
+            fx2, f_loss = cast_return(self.f(x2, set_rng=True, **f_args))
+            torch.autograd.backward((fx2, f_loss), (dx1, dl_f), retain_graph=True)
 
         with torch.no_grad():
             x1 = y1 - fx2
@@ -115,20 +125,26 @@ class _ReversibleFunction(Function):
     @staticmethod
     def forward(ctx, x, blocks, args):
         ctx.args = args
+
+        f_aux_loss = []
+        g_aux_loss = []
+
         for block, kwarg in zip(blocks, args):
-            x = block(x, **kwarg)
+            x, f_loss, g_loss = block(x, **kwarg)
+            f_aux_loss.append(f_loss)
+            g_aux_loss.append(g_loss)
+
         ctx.y = x.detach()
         ctx.blocks = blocks
-        return x
+        return x, torch.stack(f_aux_loss), torch.stack(g_aux_loss)
 
     @staticmethod
-    def backward(ctx, dy):
+    def backward(ctx, dy, dl_f, dl_g):
         y = ctx.y
         args = ctx.args
-        for block, kwargs in zip(ctx.blocks[::-1], args[::-1]):
-            y, dy = block.backward_pass(y, dy, **kwargs)
+        for block, kwargs, ind in zip(ctx.blocks[::-1], args[::-1], range(len(ctx.blocks))[::-1]):
+            y, dy = block.backward_pass(y, dy, dl_f[ind], dl_g[ind], **kwargs)
         return dy, None, None
-
 
 class SequentialSequence(nn.Module):
     def __init__(self, layers, args_route = {}, layer_dropout = 0.):
@@ -145,10 +161,17 @@ class SequentialSequence(nn.Module):
         if self.training and self.layer_dropout > 0:
             layers_and_args = layer_drop(layers_and_args, self.layer_dropout)
 
+        aux_loss = torch.zeros(1, device=x.device, dtype=x.dtype)
+
         for (f, g), (f_args, g_args) in layers_and_args:
-            x = x + f(x, **f_args)
-            x = x + g(x, **g_args)
-        return x
+            res, loss = cast_return(f(x, **f_args))
+            aux_loss += loss
+            x = x + res
+
+            res, loss = cast_return(g(x, **g_args))
+            aux_loss += loss
+            x = x + res
+        return x, aux_loss
 
 class ReversibleSequence(nn.Module):
     def __init__(self, blocks, args_route = {}, layer_dropout = 0.):
@@ -170,5 +193,7 @@ class ReversibleSequence(nn.Module):
             layers_and_args = layer_drop(layers_and_args, self.layer_dropout)
             blocks, args = map(lambda ind: list(map(itemgetter(ind), layers_and_args)), (0, 1))
 
-        out =  _ReversibleFunction.apply(x, blocks, args)
-        return torch.stack(out.chunk(2, dim=-1)).sum(dim=0)
+        out, f_loss, g_loss =  _ReversibleFunction.apply(x, blocks, args)
+        out = torch.stack(out.chunk(2, dim=-1)).mean(dim=0)
+        aux_loss = f_loss.sum() + g_loss.sum()
+        return out, aux_loss

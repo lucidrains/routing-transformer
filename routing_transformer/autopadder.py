@@ -65,7 +65,7 @@ class Autopadder(nn.Module):
 
             kwargs.update(context=context)
 
-        out = self.net(x, **kwargs)
+        out, loss = self.net(x, **kwargs)
 
         output_slice = slice(0, t) if not self.pad_left else slice(padding, None)
-        return out[:, output_slice]
+        return out[:, output_slice], loss

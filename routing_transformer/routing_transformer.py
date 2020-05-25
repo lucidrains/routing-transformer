@@ -16,8 +16,23 @@ KMEAN_INIT_ITERS = 10
 def identity(x, *args, **kwargs):
     return x
 
+def merge_dims(ind_from, ind_to, tensor):
+    shape = list(tensor.shape)
+    arr_slice = slice(ind_from, ind_to + 1)
+    shape[arr_slice] = [reduce(mul, shape[arr_slice])]
+    return tensor.reshape(*shape)
+
+def expand_dim(t, dim, k):
+    t = t.unsqueeze(dim)
+    expand_shape = [-1] * len(t.shape)
+    expand_shape[dim] = k
+    return t.expand(*expand_shape)
+
 def default(val, default_val):
     return default_val if val is None else val
+
+def to(t):
+    return {'device': t.device, 'dtype': t.dtype}
 
 def find_modules(nn_module, type):
     return [module for module in nn_module.modules() if isinstance(module, type)]
@@ -25,21 +40,18 @@ def find_modules(nn_module, type):
 def is_empty(t):
     return t.nelement() == 0
 
+def max_neg_value(tensor):
+    return -torch.finfo(tensor.dtype).max
+
+def batched_index_select(values, indices):
+    last_dim = values.shape[-1]
+    return values.gather(2, expand_dim(indices, -1, last_dim))
+
 def ema_inplace(moving_avg, new, decay):
     if is_empty(moving_avg):
         moving_avg.data.copy_(new)
         return
     moving_avg.data.mul_(decay).add_(1 - decay, new)
-
-def max_neg_value(tensor):
-    return -torch.finfo(tensor.dtype).max
-
-def to(t):
-    return {'device': t.device, 'dtype': t.dtype}
-
-def batched_index_select(values, indices):
-    last_dim = values.shape[-1]
-    return values.gather(2, indices[:, :, :, None].expand(-1, -1, -1, last_dim))
 
 def batched_bincount(index, num_classes, dim=-1):
     shape = list(index.shape)
@@ -56,7 +68,7 @@ def squared_distance(x, means):
 
 def dists_and_buckets(x, means):
     dists = similarity(x, means)
-    dists, buckets = torch.max(dists, dim=-1)
+    _, buckets = torch.max(dists, dim=-1)
     return dists, buckets
 
 def compute_se(x, means):
@@ -68,11 +80,11 @@ def compute_se(x, means):
 
 def buckets_to_means(x, buckets, num_clusters):
     b, h, l, d = x.shape
-    means = buckets.new_zeros(b, h, num_clusters, d).float()  # hcd
-    means.scatter_add_(-2, buckets.unsqueeze(-1).expand(-1, -1, -1, d), x.float())
+    means = buckets.new_zeros(b, h, num_clusters, d).float()
+    means.scatter_add_(-2, expand_dim(buckets, -1, d), x.float())
     return F.normalize(means.sum(0, keepdim=True).type(x.dtype), dim=-1)
 
-def kmeans_iter(x, means, num_clusters, compute_se_):  # hard k-means single iter
+def kmeans_iter(x, means, num_clusters, compute_se_):
     dists, buckets = dists_and_buckets(x, means)
     bins = batched_bincount(buckets, num_clusters).sum(0, keepdim=True)
     zero_mask = bins.long() == 0
@@ -80,37 +92,40 @@ def kmeans_iter(x, means, num_clusters, compute_se_):  # hard k-means single ite
     means = torch.where(zero_mask.unsqueeze(-1), means, means_)
     means = means.squeeze(0)
     se = compute_se(x, means) if compute_se_ else None
-    return means, se
+    return means, buckets, dists, se
 
 def kmeans(x, means, training=True, init=False, compute_se=False):
-    b, *_, d = x.shape
+    b, h, t, d = x.shape
     num_clusters = means.shape[1]
 
     max_iters = 1 if training else 0
     
     if init:
         max_iters = max(KMEAN_INIT_ITERS, max_iters)
-        means = x.transpose(0, 1).contiguous().view(t, -1, d)
-        means = means[:, torch.randperm(num_clusters, device=x.device)[:num_clusters]]
+        means = x.transpose(0, 1).contiguous().view(h, -1, d)
+        indices = torch.randperm(means.size(1), device=x.device)[:num_clusters]
+        means = means[:, indices]
 
-    se = None
+    buckets = dists = se = None
 
     for idx in range(max_iters):
-        means, se = kmeans_iter(x, means, num_clusters, compute_se)
+        means, buckets, dists, se = kmeans_iter(x, means, num_clusters, compute_se)
 
-    dists = similarity(x, means)
-    return means, dists, se
+    if dists is None:
+        dists, buckets = dists_and_buckets(x, means)
+
+    return means, buckets, dists, se
 
 # pick the k points closest to each centroid and sort their indices in an ascending order for causal attention
 def distribution(dists, window_size):
     _, topk_indices = dists.topk(k=window_size, dim=-2)
     sort_val, _ = topk_indices.sort(dim=-2)
-    indices = sort_val.transpose(-2, -1)  # [b, h, c, l]
+    indices = sort_val.transpose(-2, -1)
     return indices
 
-def scatter_mean(t, index, dim, eps = 1e-5):
-    numer = torch.zeros_like(t).scatter_add(dim, index, t)
-    denom = torch.zeros_like(t).scatter_add(dim, index, torch.ones_like(t))
+def scatter_mean(src, t, index, dim, eps = 1e-5):
+    numer = src.scatter_add(dim, index, t)
+    denom = src.scatter_add(dim, index, torch.ones_like(t))
     return numer / (denom + eps)
 
 def look_around(x, backward = 1, forward = 0, pad_value = -1, dim = 2):
@@ -146,9 +161,9 @@ class PreNorm(nn.ModuleList):
         super().__init__()
         self.norm = nn.LayerNorm(dim)
         self.fn = fn
-    def forward(self, x):
+    def forward(self, x, **kwargs):
         x = self.norm(x)
-        return self.fn(x)
+        return self.fn(x, **kwargs)
 
 # positional embeddings
 
@@ -323,7 +338,7 @@ def register_kmeans_update_on_backwards(module):
     return module.register_backward_hook(hook)
 
 class KmeansAttention(nn.Module):
-    def __init__(self, num_clusters, window_size, num_heads, head_dim, causal = False, dropout = 0., ema_decay = 0.999, use_routing_matrix = False):
+    def __init__(self, num_clusters, window_size, num_heads, head_dim, causal = False, dropout = 0., ema_decay = 0.999, commitment = 1e-4, use_routing_matrix = False):
         super().__init__()
         self.num_heads = num_heads
         self.num_clusters = num_clusters
@@ -336,10 +351,11 @@ class KmeansAttention(nn.Module):
 
         self.rel_pos = RelativePositionalEmbedding(head_dim, num_heads, window_size)
 
+        self.commitment = commitment
         self.ema_decay = ema_decay
-        self.register_buffer('means', torch.zeros(num_heads, num_clusters, head_dim))
+        self.register_buffer('means', torch.randn(num_heads, num_clusters, head_dim))
         self.register_buffer('new_means', torch.empty(num_heads, num_clusters, head_dim))
-        self.register_buffer('initted', torch.tensor(True))
+        self.register_buffer('initted', torch.tensor(False))
 
         self.dropout = nn.Dropout(dropout)
 
@@ -351,31 +367,37 @@ class KmeansAttention(nn.Module):
         ema_inplace(self.means, new_means, 0. if first else self.ema_decay)
 
         if first:
-            self.initted[0] = True
+            self.initted = torch.tensor(True)
 
         if not is_empty(self.new_means):
             self.new_means = torch.empty_like(self.new_means)
 
-    def forward(self, qk, v, **kwargs):
+    def forward(self, qk, v, input_mask = None):
         b, h, t, d, wsz, device = *qk.shape, self.window_size, qk.device
-        num_clusters = t // wsz
+        out = torch.zeros_like(qk)
+
+        num_clusters = self.means.shape[1]
+        window_size = min(wsz, t)
+
+        k_routing = torch.einsum('bhtd,hdr->bhtr', qk, self.router) if self.router is not None else qk
+        k_routing = F.normalize(qk, dim=-1)
 
         with torch.no_grad():
-            k_routing = torch.einsum('bhtd,hdr->bhtr', qk, self.router) if self.router is not None else qk
-            k_routing = F.normalize(k_routing, dim=-1)
+            means, buckets, dists, se = kmeans(k_routing, self.means, training=self.training, init=not self.initted)
+            indices = distribution(dists, window_size)
 
-            means, dists, se = kmeans(k_routing, self.means, training=self.training, init=not self.initted)
-            indices = distribution(dists, wsz)
+        routed_means = batched_index_select(expand_dim(self.means, 0, b), buckets)
+        commitment_loss = F.mse_loss(k_routing, routed_means) * self.commitment
 
-            if self.training:
-                self.new_means.copy_(means)
+        if self.training:
+            self.new_means.copy_(means)
 
-            indices = indices.contiguous().view(*indices.size()[:2], -1)
+        indices = indices.contiguous().view(*indices.size()[:2], -1)
         
         qk = batched_index_select(qk, indices)
         v = batched_index_select(v, indices)
 
-        qk, v = map(lambda x: x.reshape(b, h, num_clusters, wsz, d), (qk, v))
+        qk, v = map(lambda x: x.reshape(b, h, num_clusters, window_size, d), (qk, v))
 
         q = qk
         k = F.normalize(qk, 2, dim=-1).type(qk.dtype)
@@ -384,6 +406,13 @@ class KmeansAttention(nn.Module):
         dots = dots + self.rel_pos(q)
 
         mask_value = max_neg_value(dots)
+
+        if input_mask is not None:
+            qk_mask = expand_dim(input_mask, 1, h).gather(2, indices)
+            qk_mask = qk_mask.reshape(b, h, num_clusters, window_size)
+            mask = qk_mask[:, :, :, :, None] * qk_mask[:, :, :, None, :]
+            dots.masked_fill_(~mask, mask_value)
+            del mask
 
         if self.causal:
             mask = torch.ones(wsz, wsz, device=device).byte().triu_(1).bool()
@@ -399,8 +428,8 @@ class KmeansAttention(nn.Module):
 
         bo = torch.einsum('bhcij,bhcjd->bhcid', dots, v)
         so = torch.reshape(bo, (b, h, -1, bo.shape[-1])).float()
-        out = scatter_mean(so, indices.unsqueeze(-1).expand_as(so), -2)
-        return out
+        out = scatter_mean(out, so, indices.unsqueeze(-1).expand_as(so), -2)
+        return out, commitment_loss
 
 # feedforward
 
@@ -463,7 +492,7 @@ class SelfAttention(nn.Module):
 
         self.dropout = nn.Dropout(dropout)
 
-    def forward(self, x):
+    def forward(self, x, input_mask = None):
         b, t, e, h = *x.shape, self.heads
 
         qk, v = self.to_qkv(x).chunk(2, dim=-1)
@@ -475,16 +504,21 @@ class SelfAttention(nn.Module):
         has_local, has_global = map(lambda x: x.shape[1] > 0, (lqk, qk))
 
         out = []
+        total_loss = torch.zeros(1, device=x.device, dtype=x.dtype)
+
         if has_local:
-            out.append(self.local_attn(lqk, lqk, lv))
+            local_out = self.local_attn(lqk, lqk, lv, input_mask = input_mask)
+            out.append(local_out)
 
         if has_global:
-            out.append(self.global_attn(qk, v))
+            global_out, loss = self.global_attn(qk, v, input_mask = input_mask)
+            total_loss = total_loss + loss
+            out.append(global_out)
 
         out = torch.cat(out, dim=1)
         out = out.reshape(b, h, t, -1).transpose(1, 2).reshape(b, t, -1)
         out = self.to_out(out)
-        return self.dropout(out)
+        return self.dropout(out), loss
 
 class RoutingTransformer(nn.Module):
     def __init__(self, dim, depth, max_seq_len, heads = 8, window_size = 64, causal = False, attn_dropout = 0., ff_dropout = 0., attn_layer_dropout = 0., layer_dropout = 0., n_local_attn_heads = 0, ff_glu = False, reversible = False, ff_chunks = 1, kmeans_ema_decay = 0.999):
@@ -506,14 +540,17 @@ class RoutingTransformer(nn.Module):
             layers.append(nn.ModuleList([attn, ff]))
 
         execute_type = ReversibleSequence if reversible else SequentialSequence
-        self.layers = execute_type(layers, layer_dropout = layer_dropout)
-        self.pad_to_window_size = window_size
+
+        route_attn = ((True, False),) * depth
+        attn_route_map = {'input_mask': route_attn}
+        self.layers = execute_type(layers, args_route = {**attn_route_map}, layer_dropout = layer_dropout)
+        self.pad_to_window_size = window_size // 2
 
         self.remove_handle_fn = register_kmeans_update_on_backwards(self)        
 
     def forward(self, x, **kwargs):
-        x = self.layers(x, **kwargs)
-        return x
+        x, loss = self.layers(x, **kwargs)
+        return x, loss
 
 class RoutingTransformerLM(nn.Module):
     def __init__(self, num_tokens, dim, depth, max_seq_len, heads = 8, window_size = 64, causal = False, attn_dropout = 0., ff_dropout = 0., attn_layer_dropout = 0., layer_dropout = 0., ff_mult = 4, ff_activation = None, ff_glu = False, return_embeddings = False, n_local_attn_heads = 0, reversible = False, ff_chunks = 1, kmeans_ema_decay = 0.999):
@@ -527,5 +564,5 @@ class RoutingTransformerLM(nn.Module):
     def forward(self, x, **kwargs):
         x = self.token_emb(x)
         x = x + self.axial_pos_emb(x)
-        x = self.routing_transformer(x, **kwargs)
-        return self.out(x)
+        x, loss = self.routing_transformer(x, **kwargs)
+        return self.out(x), loss
