@@ -323,7 +323,7 @@ def register_kmeans_update_on_backwards(module):
     return module.register_backward_hook(hook)
 
 class KmeansAttention(nn.Module):
-    def __init__(self, num_clusters, window_size, num_heads, head_dim, causal = False, dropout = 0., ema_decay = 0.999):
+    def __init__(self, num_clusters, window_size, num_heads, head_dim, causal = False, dropout = 0., ema_decay = 0.999, use_routing_matrix = False):
         super().__init__()
         self.num_heads = num_heads
         self.num_clusters = num_clusters
@@ -332,7 +332,7 @@ class KmeansAttention(nn.Module):
         self.window_size = window_size
         self.causal = causal
 
-        self.router = nn.Parameter(torch.randn(num_heads, head_dim, head_dim))
+        self.router = nn.Parameter(torch.randn(num_heads, head_dim, head_dim)) if use_routing_matrix else None
 
         self.rel_pos = RelativePositionalEmbedding(head_dim, num_heads, window_size)
 
@@ -361,8 +361,8 @@ class KmeansAttention(nn.Module):
         num_clusters = t // wsz
 
         with torch.no_grad():
-            k_routing = torch.einsum('bhtd,hdr->bhtr', qk, self.router)
-            k_routing = F.normalize(qk, dim=-1)
+            k_routing = torch.einsum('bhtd,hdr->bhtr', qk, self.router) if self.router is not None else qk
+            k_routing = F.normalize(k_routing, dim=-1)
 
             means, dists, se = kmeans(k_routing, self.means, training=self.training, init=not self.initted)
             indices = distribution(dists, wsz)
