@@ -491,7 +491,7 @@ class SelfAttention(nn.Module):
         has_local, has_global = map(lambda x: x.shape[1] > 0, (lqk, qk))
 
         out = []
-        total_loss = torch.tensor(0., **to(x))
+        total_loss = torch.tensor(0., **to(x)).requires_grad_()
 
         if has_local:
             local_out = self.local_attn(lqk, lqk, lv, input_mask = input_mask)
@@ -505,7 +505,7 @@ class SelfAttention(nn.Module):
         out = torch.cat(out, dim=1)
         out = out.reshape(b, h, t, -1).transpose(1, 2).reshape(b, t, -1)
         out = self.to_out(out)
-        return self.dropout(out), loss
+        return self.dropout(out), total_loss
 
 class RoutingTransformer(nn.Module):
     def __init__(self, dim, depth, max_seq_len, heads = 8, window_size = 64, causal = False, attn_dropout = 0., ff_dropout = 0., attn_layer_dropout = 0., layer_dropout = 0., n_local_attn_heads = 0, ff_glu = False, reversible = False, ff_chunks = 1, kmeans_ema_decay = 0.999, commitment_factor = 1e-4):
