@@ -280,13 +280,6 @@ def update_kmeans_on_backwards(module):
 
     return module.register_backward_hook(hook)
 
-def batched_bincount(index, num_classes, dim=-1):
-    shape = list(index.shape)
-    shape[dim] = num_classes
-    out = index.new_zeros(shape)
-    out.scatter_add_(dim, index, torch.ones_like(index, dtype=index.dtype))
-    return out
-
 def similarity(x, means):
     return torch.einsum('bhld,hcd->bhlc', x, means)
 
@@ -295,13 +288,21 @@ def dists_and_buckets(x, means):
     _, buckets = torch.max(dists, dim=-1)
     return dists, buckets
 
+def batched_bincount(index, num_classes, dim=-1):
+    shape = list(index.shape)
+    shape[dim] = num_classes
+    out = index.new_zeros(shape)
+    out.scatter_add_(dim, index, torch.ones_like(index, dtype=index.dtype))
+    return out
+
 def buckets_to_means(x, buckets, num_clusters):
     b, h, l, d = x.shape
     means = buckets.new_zeros(b, h, num_clusters, d).float()
     means.scatter_add_(-2, expand_dim(buckets, -1, d), x.float())
     return F.normalize(means.sum(0, keepdim=True).type(x.dtype), dim=-1)
 
-def kmeans_iter(x, means, num_clusters):
+def kmeans_iter(x, means):
+    num_clusters = means.shape[1]
     dists, buckets = dists_and_buckets(x, means)
     bins = batched_bincount(buckets, num_clusters).sum(0, keepdim=True)
     zero_mask = bins.long() == 0
@@ -312,18 +313,17 @@ def kmeans_iter(x, means, num_clusters):
 
 def kmeans(x, means, training=True, init=False):
     b, h, t, d = x.shape
-    num_clusters = means.shape[1]
-
     max_iters = 1 if training else 0
     
     if init:
+        num_clusters = means.shape[1]
         max_iters = max(KMEAN_INIT_ITERS, max_iters)
         means = x.transpose(0, 1).contiguous().view(h, -1, d)
         indices = torch.randperm(means.size(1), device=x.device)[:num_clusters]
         means = means[:, indices]
 
     for idx in range(max_iters):
-        means, buckets, dists = kmeans_iter(x, means, num_clusters)
+        means, buckets, dists = kmeans_iter(x, means)
 
     if max_iters == 0:
         dists, buckets = dists_and_buckets(x, means)
