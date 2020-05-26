@@ -297,7 +297,7 @@ def kmeans_iter(x, means, num_clusters):
     means = means.squeeze(0)
     return means, buckets, dists
 
-def kmeans(x, means, training=True, init=False, compute_se=False):
+def kmeans(x, means, training=True, init=False):
     b, h, t, d = x.shape
     num_clusters = means.shape[1]
 

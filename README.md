@@ -1,4 +1,4 @@
-## Routing Transformer (wip)
+## Routing Transformer
 
 <img src="./routing_attention.png" width="500px"></img>
 
