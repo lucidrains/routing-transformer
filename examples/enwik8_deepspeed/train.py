@@ -59,7 +59,7 @@ model = RoutingTransformerLM(
     reversible = True,
     ff_chunks = 2,
     attn_dropout = 0.1,
-    n_local_attn_heads = 4
+    n_local_attn_heads = (8, 8, 8, 8, 4, 4, 2, 2)
 )
 
 model = AutoregressiveWrapper(model)
