@@ -95,6 +95,19 @@ class PreNorm(nn.ModuleList):
         x = self.norm(x)
         return self.fn(x, **kwargs)
 
+class ProjectInOut(nn.Module):
+    def __init__(self, fn, dim_in, dim_out, project_out = True):
+        super().__init__()
+        self.fn = fn
+        self.project_in = nn.Linear(dim_in, dim_out)
+        self.project_out = nn.Linear(dim_out, dim_in) if project_out else identity
+
+    def forward(self, x, **kwargs):
+        x = self.project_in(x)
+        x, loss = self.fn(x, **kwargs)
+        x = self.project_out(x)
+        return x, loss
+
 # positional embeddings
 
 class AbsolutePositionalEmbedding(nn.Module):
@@ -540,13 +553,19 @@ class RoutingTransformer(nn.Module):
         return x, loss
 
 class RoutingTransformerLM(nn.Module):
-    def __init__(self, num_tokens, dim, depth, max_seq_len, heads = 8, window_size = 64, causal = False, attn_dropout = 0., ff_dropout = 0., attn_layer_dropout = 0., layer_dropout = 0., ff_mult = 4, ff_activation = None, ff_glu = False, return_embeddings = False, n_local_attn_heads = 0, reversible = False, ff_chunks = 1, kmeans_ema_decay = 0.999, commitment_factor = 1e-4):
+    def __init__(self, num_tokens, dim, depth, max_seq_len, heads = 8, window_size = 64, causal = False, emb_dim = None, attn_dropout = 0., ff_dropout = 0., attn_layer_dropout = 0., layer_dropout = 0., ff_mult = 4, ff_activation = None, ff_glu = False, return_embeddings = False, n_local_attn_heads = 0, reversible = False, ff_chunks = 1, kmeans_ema_decay = 0.999, commitment_factor = 1e-4):
         super().__init__()
+        emb_dim = default(emb_dim, dim)
         self.max_seq_len = max_seq_len
-        self.token_emb = nn.Embedding(num_tokens, dim)
-        self.axial_pos_emb = AxialPositionalEmbedding(dim, max_seq_len, axial_shape=(max_seq_len // window_size, window_size))
+
+        self.token_emb = nn.Embedding(num_tokens, emb_dim)
+        self.axial_pos_emb = AxialPositionalEmbedding(emb_dim, max_seq_len, axial_shape=(max_seq_len // window_size, window_size))
         self.routing_transformer = RoutingTransformer(dim, depth, max_seq_len, heads = heads, window_size = window_size, causal = causal, ff_dropout = ff_dropout, attn_dropout = attn_dropout, attn_layer_dropout = attn_layer_dropout, layer_dropout = layer_dropout, n_local_attn_heads = n_local_attn_heads, ff_glu = ff_glu, reversible = reversible, ff_chunks = ff_chunks, kmeans_ema_decay = kmeans_ema_decay)
-        self.out = nn.Linear(dim, num_tokens) if not return_embeddings else identity
+
+        if emb_dim != dim:
+            self.routing_transformer = ProjectInOut(self.routing_transformer, emb_dim, dim, project_out = not return_embeddings)
+
+        self.out = nn.Linear(emb_dim, num_tokens) if not return_embeddings else identity
 
     def forward(self, x, **kwargs):
         x = self.token_emb(x)
