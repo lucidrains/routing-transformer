@@ -468,11 +468,12 @@ class FeedForward(nn.Module):
 # self attention
 
 class SelfAttention(nn.Module):
-    def __init__(self,  dim, depth, max_seq_len, heads, local_attn_heads, window_size, causal = False, attn_dropout = 0., dropout = 0., kmeans_ema_decay = 0.999, commitment_factor = 1e-4):
+    def __init__(self,  dim, depth, max_seq_len, heads, local_attn_heads, window_size, local_attn_window_size = None, causal = False, attn_dropout = 0., dropout = 0., kmeans_ema_decay = 0.999, commitment_factor = 1e-4):
         super().__init__()
         assert (dim % heads) == 0, 'hidden dimension must be divisible by number of heads'
         assert (max_seq_len % window_size) == 0, 'maximum sequence length must be divisible by the target window size'
         assert local_attn_heads <= heads, 'number of local attention heads must be less than total heads'
+        local_attn_window_size = default(local_attn_window_size, window_size // 2)
 
         self.heads = heads
         self.local_attn_heads = local_attn_heads
@@ -482,7 +483,7 @@ class SelfAttention(nn.Module):
         num_clusters = max_seq_len // window_size
 
         if self.local_attn_heads > 0:
-            self.local_attn = LocalAttention(window_size // 2, local_attn_heads, head_dim, causal = True, shared_qk = True, dropout = attn_dropout)
+            self.local_attn = LocalAttention(local_attn_window_size, local_attn_heads, head_dim, causal = True, shared_qk = True, dropout = attn_dropout)
 
         if self.global_attn_heads > 0:
             self.global_attn = KmeansAttention(num_clusters, window_size, self.global_attn_heads, head_dim, causal = causal, dropout = attn_dropout, ema_decay = kmeans_ema_decay, commitment = commitment_factor)
@@ -521,8 +522,9 @@ class SelfAttention(nn.Module):
         return self.dropout(out), total_loss
 
 class RoutingTransformer(nn.Module):
-    def __init__(self, dim, depth, max_seq_len, heads = 8, window_size = 64, causal = False, attn_dropout = 0., ff_dropout = 0., attn_layer_dropout = 0., layer_dropout = 0., n_local_attn_heads = 0, ff_glu = False, reversible = False, ff_chunks = 1, kmeans_ema_decay = 0.999, commitment_factor = 1e-4):
+    def __init__(self, dim, depth, max_seq_len, heads = 8, window_size = 64, local_attn_window_size = None, causal = False, attn_dropout = 0., ff_dropout = 0., attn_layer_dropout = 0., layer_dropout = 0., n_local_attn_heads = 0, ff_glu = False, reversible = False, ff_chunks = 1, kmeans_ema_decay = 0.999, commitment_factor = 1e-4):
         super().__init__()
+        local_attn_window_size = default(local_attn_window_size, window_size // 2)
         if type(n_local_attn_heads) is not tuple:
             n_local_attn_heads = tuple([n_local_attn_heads] * depth)
 
@@ -533,7 +535,7 @@ class RoutingTransformer(nn.Module):
         fn_wrapper = partial(PreNorm, dim)
 
         for ind, local_heads in zip(range(depth), n_local_attn_heads):
-            attn = SelfAttention(dim, depth, max_seq_len, heads, local_heads, window_size, causal = causal, attn_dropout = attn_dropout, dropout = attn_layer_dropout, kmeans_ema_decay = kmeans_ema_decay, commitment_factor = 1e-4)
+            attn = SelfAttention(dim, depth, max_seq_len, heads, local_heads, window_size, causal = causal, local_attn_window_size = local_attn_window_size, attn_dropout = attn_dropout, dropout = attn_layer_dropout, kmeans_ema_decay = kmeans_ema_decay, commitment_factor = 1e-4)
             ff = Chunk(ff_chunks, FeedForward(dim, dropout = ff_dropout, glu = ff_glu), along_dim=1)
 
             attn, ff = map(fn_wrapper, (attn, ff))
@@ -544,8 +546,8 @@ class RoutingTransformer(nn.Module):
         route_attn = ((True, False),) * depth
         attn_route_map = {'input_mask': route_attn}
         self.layers = execute_type(layers, args_route = {**attn_route_map}, layer_dropout = layer_dropout)
-        self.pad_to_window_size = window_size // 2
 
+        self.pad_to_window_size = local_attn_window_size
         update_kmeans_on_backwards(self)        
 
     def forward(self, x, **kwargs):
@@ -553,14 +555,14 @@ class RoutingTransformer(nn.Module):
         return x, loss
 
 class RoutingTransformerLM(nn.Module):
-    def __init__(self, num_tokens, dim, depth, max_seq_len, heads = 8, window_size = 64, causal = False, emb_dim = None, attn_dropout = 0., ff_dropout = 0., attn_layer_dropout = 0., layer_dropout = 0., ff_mult = 4, ff_activation = None, ff_glu = False, return_embeddings = False, n_local_attn_heads = 0, reversible = False, ff_chunks = 1, kmeans_ema_decay = 0.999, commitment_factor = 1e-4):
+    def __init__(self, num_tokens, dim, depth, max_seq_len, heads = 8, window_size = 64, local_attn_window_size = None, causal = False, emb_dim = None, attn_dropout = 0., ff_dropout = 0., attn_layer_dropout = 0., layer_dropout = 0., ff_mult = 4, ff_activation = None, ff_glu = False, return_embeddings = False, n_local_attn_heads = 0, reversible = False, ff_chunks = 1, kmeans_ema_decay = 0.999, commitment_factor = 1e-4):
         super().__init__()
         emb_dim = default(emb_dim, dim)
         self.max_seq_len = max_seq_len
 
         self.token_emb = nn.Embedding(num_tokens, emb_dim)
         self.axial_pos_emb = AxialPositionalEmbedding(emb_dim, max_seq_len, axial_shape=(max_seq_len // window_size, window_size))
-        self.routing_transformer = RoutingTransformer(dim, depth, max_seq_len, heads = heads, window_size = window_size, causal = causal, ff_dropout = ff_dropout, attn_dropout = attn_dropout, attn_layer_dropout = attn_layer_dropout, layer_dropout = layer_dropout, n_local_attn_heads = n_local_attn_heads, ff_glu = ff_glu, reversible = reversible, ff_chunks = ff_chunks, kmeans_ema_decay = kmeans_ema_decay)
+        self.routing_transformer = RoutingTransformer(dim, depth, max_seq_len, heads = heads, window_size = window_size, local_attn_window_size = local_attn_window_size, causal = causal, ff_dropout = ff_dropout, attn_dropout = attn_dropout, attn_layer_dropout = attn_layer_dropout, layer_dropout = layer_dropout, n_local_attn_heads = n_local_attn_heads, ff_glu = ff_glu, reversible = reversible, ff_chunks = ff_chunks, kmeans_ema_decay = kmeans_ema_decay)
 
         if emb_dim != dim:
             self.routing_transformer = ProjectInOut(self.routing_transformer, emb_dim, dim, project_out = not return_embeddings)
