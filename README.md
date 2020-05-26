@@ -61,7 +61,7 @@ model = RoutingTransformer(
 ).cuda()
 
 x = torch.randn(1, 8192, 512).cuda()
-input_mask = torch.ones_like(x).bool().cuda()
+input_mask = torch.ones(1, 8192).bool().cuda()
 
 y, aux_loss = model(x, input_mask = input_mask) # (1, 8192, 512)
 aux_loss.backward() # add auxiliary loss to main loss before backprop
