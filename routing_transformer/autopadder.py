@@ -3,42 +3,35 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 
-def pad_to_multiple(tensor, multiple, dim=-1):
+def pad_to_multiple(tensor, multiple, dim=-1, value=0):
     seqlen = tensor.shape[dim]
     m = seqlen / multiple
     if m.is_integer():
-        return tensor, 0
+        return tensor
 
     pre_pad_offset = (0,) * (-1 - dim) * 2
     padding = math.ceil(m) * multiple - seqlen
-    padded_tensor = F.pad(tensor, (*pre_pad_offset, *(0, padding)), value=0)
-    return padded_tensor, padding
+    padded_tensor = F.pad(tensor, (*pre_pad_offset, *(0, padding)), value=value)
+    return padded_tensor
 
 class Autopadder(nn.Module):
-    def __init__(self, net, pad_multiple, dim=-2):
+    def __init__(self, net, pad_multiple):
         super().__init__()
         self.net = net
         self.pad_multiple = pad_multiple
-        self.pad_dim = dim
 
     def forward(self, *args, **kwargs):
-        args = list(args)
-
-        x = args[0]
-        b, _, t, _, device = *x.shape, x.device
+        q, args = args[0], list(args)
+        b, h, t, _, device = *q.shape, q.device
 
         input_mask = kwargs.get('input_mask')
 
         if input_mask is None:
-            input_mask = torch.full_like(x, True, device=device, dtype=torch.bool)
+            input_mask = torch.full((b, t), True, device=device, dtype=torch.bool)
 
-        for ind, x in enumerate(args):
-            x, padding = pad_to_multiple(x, self.pad_multiple, dim=self.pad_dim)
-            args[ind] = x
-
-        if padding != 0:
-            new_mask = F.pad(input_mask, (0, padding), value=False)
-            kwargs.update(input_mask=new_mask)
+        args = map(lambda t: pad_to_multiple(t, self.pad_multiple, dim=-2), args)
+        new_mask = pad_to_multiple(input_mask, self.pad_multiple, dim=-1, value=False)
+        kwargs.update(input_mask=new_mask)
 
         out = self.net(*args, **kwargs)
         return out[:, :, 0:t]
