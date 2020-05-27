@@ -68,40 +68,44 @@ y, aux_loss = model(x, input_mask = input_mask) # (1, 8192, 512)
 aux_loss.backward() # add auxiliary loss to main loss before backprop
 ```
 
-Encoder / decoder
+## Encoder Decoder
+
+To use a full encoder, decoder, simply import the `RoutingTransformerEncDec` class. Save for the `dim` keyword, all other keywords will be either prepended with `enc_` or `dec_` for the encoder and decoder `RoutingTransformerLM` class respectively.
 
 ```python
-enc = RoutingTransformerLM(
-    num_tokens = 20000,
-    dim = 512,
-    heads = 8,
-    depth = 6,
-    max_seq_len = 4096,
-    window_size = 128,
-    n_local_attn_heads = 4,
-    return_embeddings = True
-).cuda()
+import torch
+from routing_transformer import RoutingTransformerEncDec
 
-dec = RoutingTransformerLM(
-    num_tokens = 20000,
-    dim = 512,
-    heads = 8,
-    depth = 6,
-    causal = True,
-    max_seq_len = 4096,
-    window_size = 128,
-    n_local_attn_heads = 4,
-    receives_context = True
-).cuda()
+model = RoutingTransformerEncDec(
+    dim=512,
+    enc_num_tokens = 20000,
+    enc_depth = 4,
+    enc_heads = 8,
+    enc_max_seq_len = 4096,
+    enc_window_size = 128,
+    dec_num_tokens = 20000,
+    dec_depth = 4,
+    dec_heads = 8,
+    dec_max_seq_len = 4096,
+    dec_window_size = 128,
+)
+
+model.cuda()
+model.train()
 
 src = torch.randint(0, 20000, (1, 4096)).cuda()
 tgt = torch.randint(0, 20000, (1, 4096)).cuda()
-
 src_mask = torch.ones_like(src).bool().cuda()
 tgt_mask = torch.ones_like(tgt).bool().cuda()
 
-context, enc_aux_loss = enc(src, input_mask = src_mask)
-out, dec_aux_loss = dec(tgt, context = context, context_mask = src_mask, input_mask = tgt_mask)
+loss = model(src, tgt, enc_input_mask = src_mask, dec_input_mask = tgt_mask, return_loss = True, randomly_truncate_sequence = True)
+loss.backward()
+
+# do your training, then to sample up to 2048 tokens based on the source sequence
+src = torch.randint(0, 20000, (1, 4096)).cuda()
+start_tokens = torch.ones(1, 1).long().cuda() # assume starting token is 1
+
+sample = model.generate(src, start_tokens, seq_len = 2048, eos_token = 2) # (1, <= 2048, 20000)
 ```
 
 ## Kmeans Hyperparameters
