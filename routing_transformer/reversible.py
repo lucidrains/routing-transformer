@@ -1,10 +1,12 @@
 import torch
 import torch.nn as nn
 from operator import itemgetter
+from contextlib import contextmanager
 from torch.autograd.function import Function
 from torch.utils.checkpoint import get_device_states, set_device_states
 
 # for routing arguments into the functions of the reversible layer
+
 def route_args(router, args, depth):
     routed_args = [(dict(), dict()) for _ in range(depth)]
     matched_keys = [key for key in args.keys() if key in router]
@@ -22,10 +24,9 @@ def layer_drop(layers, prob):
     blocks = layers[:1] if len(blocks) == 0 else blocks
     return blocks
 
-def cast_return(ret):
+def cast_return(ret, requires_grad = True):
     if type(ret) is not tuple:
-        loss = torch.tensor(0., device=ret.device)
-        loss.requires_grad_()
+        loss = torch.tensor(0., device=ret.device, requires_grad=requires_grad)
         return (ret, loss)
     return ret
 
@@ -74,11 +75,13 @@ class ReversibleBlock(nn.Module):
         x1, x2 = torch.chunk(x, 2, dim=2)
         y1, y2 = None, None
 
+        f_args['_reverse'] = g_args['_reverse'] = False
+
         with torch.no_grad():
-            f_out, f_loss = cast_return(self.f(x2, record_rng=self.training, **f_args))
+            f_out, f_loss = cast_return(self.f(x2, record_rng=self.training, **f_args), requires_grad = False)
             y1 = x1 + f_out
 
-            g_out, g_loss = cast_return(self.g(y1, record_rng=self.training, **g_args))
+            g_out, g_loss = cast_return(self.g(y1, record_rng=self.training, **g_args), requires_grad = False)
             y2 = x2 + g_out
 
         return torch.cat([y1, y2], dim=2), f_loss, g_loss
@@ -89,6 +92,8 @@ class ReversibleBlock(nn.Module):
 
         dy1, dy2 = torch.chunk(dy, 2, dim=2)
         del dy
+
+        f_args['_reverse'] = g_args['_reverse'] = True
 
         with torch.enable_grad():
             y1.requires_grad = True
@@ -178,7 +183,7 @@ class ReversibleSequence(nn.Module):
         super().__init__()
         self.args_route = args_route
         self.layer_dropout = layer_dropout
-        self.blocks = nn.ModuleList([ReversibleBlock(f=f, g=g) for f, g in blocks])
+        self.blocks = nn.ModuleList([ReversibleBlock(f, g) for f, g in blocks])
 
     def forward(self, x, **kwargs):
         x = torch.cat([x, x], dim=-1)

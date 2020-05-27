@@ -114,6 +114,33 @@ This is the exponential moving average decay for updating the k-means. The lower
 
 The weight of the auxiliary loss that encourages tokens to get closer (commit) to the k-mean centroids that were chosen for them.
 
+## Issues
+
+This architecture has trouble generalizing to shorter sequence lengths when decoding tokens from 1 -> maximum sequence length. The simplest and surest solution is to randomly truncate the sequence during training. This helps the network and the kmeans generalize to variable number of tokens, at the cost of prolonged training.
+
+If you are priming the network with the full sequence length at start, then you will not face this problem, and you can skip this training procedure.
+
+
+```python
+import torch
+from routing_transformer import RoutingTransformerLM, AutoregressiveWrapper
+
+model = RoutingTransformerLM(
+    num_tokens = 20000,
+    dim = 1024,
+    heads = 8,
+    depth = 12,
+    window_size = 256,
+    max_seq_len = 8192,
+    causal = True
+)
+
+model = AutoregressiveWrapper(model)
+
+x = torch.randint(0, 20000, (1, 8192))
+loss = model(x, return_loss = True, randomly_truncate_sequence = True) # (1, 8192, 20000)
+```
+
 ## Appreciation
 
 Special thanks to <a href="https://github.com/AranKomat">Aran Komatsuzaki</a> for bootstrapping the initial implementation in Pytorch that evolved into this library.

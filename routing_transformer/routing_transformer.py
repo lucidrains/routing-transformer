@@ -88,11 +88,11 @@ class Chunk(nn.Module):
         self.chunks = chunks
         self.fn = fn
 
-    def forward(self, x):
+    def forward(self, x, **kwargs):
         if self.chunks <= 1:
-            return self.fn(x)
+            return self.fn(x, **kwargs)
         chunks = x.chunk(self.chunks, dim = self.dim)
-        return torch.cat([self.fn(c) for c in chunks], dim = self.dim)
+        return torch.cat([self.fn(c, **kwargs) for c in chunks], dim = self.dim)
 
 class PreNorm(nn.ModuleList):
     def __init__(self, dim, fn):
@@ -195,30 +195,6 @@ class ParameterList(object):
 
     def to_list(self):
         return [getattr(self.kls, self._keyname(self.prefix, i)) for i in range(self.length)]
-
-# full attention
-
-class FullAttention(nn.Module):
-    def __init__(self, causal = False, dropout = 0.):
-        super().__init__()
-        self.causal = causal
-        self.dropout = nn.Dropout(dropout)
-
-    def forward(self, q, k, v, input_mask = None, **kwargs):
-        b, h, t, d = q.shape
-        dot = torch.einsum('bhie,bhje->bhij', q, k) * (d ** -0.5)
-
-        masked_value = max_neg_value(dot)
-
-        if self.causal:
-            i, j = torch.triu_indices(t, t, 1)
-            dot[:, :, i, j] = masked_value
-
-        dot = dot.softmax(dim=-1)
-        dot = self.dropout(dot)
-
-        out = torch.einsum('bhij,bhje->bhie', dot, v)
-        return out
 
 # local attention
 
@@ -327,46 +303,28 @@ def batched_bincount(index, num_classes, dim=-1):
     out.scatter_add_(dim, index, torch.ones_like(index, dtype=index.dtype))
     return out
 
-def buckets_to_means(x, buckets, num_clusters):
-    b, h, l, d, dtype = *x.shape, x.dtype
-    means = buckets.new_zeros(b, h, num_clusters, d, dtype=dtype)
-    means.scatter_add_(-2, expand_dim(buckets, -1, d), x)
-    return F.normalize(means.sum(0, keepdim=True), dim=-1).type(dtype)
+def kmeans_iter(x, means, buckets = None):
+    b, h, l, d, dtype, num_clusters = *x.shape, x.dtype, means.shape[1]
 
-def kmeans_iter(x, means):
-    num_clusters = means.shape[1]
-    dists, buckets = dists_and_buckets(x, means)
+    if buckets is None:
+        _, buckets = dists_and_buckets(x, means)
+
     bins = batched_bincount(buckets, num_clusters).sum(0, keepdim=True)
     zero_mask = bins.long() == 0
-    means_ = buckets_to_means(x, buckets, num_clusters)
+
+    means_ = buckets.new_zeros(b, h, num_clusters, d, dtype=dtype)
+    means_.scatter_add_(-2, expand_dim(buckets, -1, d), x)
+    means_ = F.normalize(means_.sum(0, keepdim=True), dim=-1).type(dtype)
+
     means = torch.where(zero_mask.unsqueeze(-1), means, means_)
     means = means.squeeze(0)
-    return means, buckets, dists
-
-def kmeans(x, means, training=True, init=False):
-    b, h, t, d = x.shape
-    max_iters = 1 if training else 0
-
-    if init:
-        num_clusters = means.shape[1]
-        max_iters = max(KMEAN_INIT_ITERS, max_iters)
-        means = x.transpose(0, 1).contiguous().view(h, -1, d)
-        indices = torch.randperm(means.size(1), device=x.device)[:num_clusters]
-        means = means[:, indices]
-
-    for idx in range(max_iters):
-        means, buckets, dists = kmeans_iter(x, means)
-
-    if max_iters == 0:
-        dists, buckets = dists_and_buckets(x, means)
-
-    return means, buckets, dists
+    return means
 
 def distribution(dists, window_size):
     _, topk_indices = dists.topk(k=window_size, dim=-2)
     sort_val, _ = topk_indices.sort(dim=-2)
     indices = sort_val.transpose(-2, -1)
-    return indices
+    return indices.reshape(*indices.size()[:2], -1)
 
 class Kmeans(nn.Module):
     def __init__(self, num_heads, head_dim, num_clusters, ema_decay = 0.999, commitment = 1e-4):
@@ -378,36 +336,52 @@ class Kmeans(nn.Module):
         self.register_buffer('initted', torch.tensor(False))
         self.new_means = None
 
+    @torch.no_grad()
+    def init(self, x):
+        if self.initted:
+            return
+        _, h, _, d, device, dtype = *x.shape, x.device, x.dtype
+
+        means = self.means.type(dtype)
+        num_clusters = means.shape[1]
+        means = x.transpose(0, 1).contiguous().view(h, -1, d)
+        indices = torch.randperm(means.size(1), device=device)[:num_clusters]
+        means = means[:, indices]
+
+        for _ in range(KMEAN_INIT_ITERS):
+            means = kmeans_iter(x, means)
+
+        self.means = means
+        self.initted = torch.tensor(True)
+
+    @torch.no_grad()
     def update(self, new_means = None):
         new_means = default(new_means, self.new_means)
         assert new_means is not None, 'new kmeans has not been supplied'
-
-        first = not self.initted
-        ema_inplace(self.means, new_means, 0. if first else self.ema_decay)
-
-        if first:
-            self.initted = torch.tensor(True)
+        ema_inplace(self.means, new_means, self.ema_decay)
 
         del self.new_means
         self.new_means = None
 
-    def forward(self, x, window_size):
+    def forward(self, x, update_means = False):
+        self.init(x)
+
         b, dtype = x.shape[0], x.dtype
         means = self.means.type(dtype)
         x = F.normalize(x, 2, dim=-1).type(dtype)
 
         with torch.no_grad():
-            means, buckets, dists = kmeans(x, means, training=self.training, init=not self.initted)
-            indices = distribution(dists, window_size)
-            indices = indices.contiguous().view(*indices.size()[:2], -1)
+            dists, buckets = dists_and_buckets(x, means)
+
+        if update_means:
+            with torch.no_grad():
+                means = kmeans_iter(x, means, buckets)
+            self.new_means = means
 
         routed_means = batched_index_select(expand_dim(means, 0, b), buckets)
         loss = F.mse_loss(x, routed_means) * self.commitment
 
-        if self.training:
-            self.new_means = ema(self.new_means, means, 0.5)
-
-        return indices, loss
+        return dists, loss
 
 # kmeans attention class
 
@@ -426,15 +400,18 @@ class KmeansAttention(nn.Module):
         self.kmeans = Kmeans(num_heads, head_dim, num_clusters, ema_decay, commitment)
         self.dropout = nn.Dropout(dropout)
 
-    def forward(self, q, k, v, query_mask = None, key_mask = None):
+    def forward(self, q, k, v, query_mask = None, key_mask = None, **kwargs):
         b, h, t, d, kv_t, wsz, c_wsz, nc, device, dtype = *q.shape, k.shape[2], self.window_size, self.context_window_size, self.num_clusters, q.device, q.dtype
+        is_reverse = kwargs.pop('_reverse', False)
+
         out = torch.zeros_like(q, dtype=dtype)
 
-        reshape_with_window = lambda x: x.reshape(b, h, nc, -1, d)
+        update_kmeans = self.training and not is_reverse
 
         if self.shared_qk:
             wsz = min(wsz, t)
-            indices, aux_loss = self.kmeans(k, wsz)
+            dists, aux_loss = self.kmeans(k, update_kmeans)
+            indices = distribution(dists, wsz)
             k = F.normalize(k, 2, dim=-1).type(dtype)
             key_mask = query_mask
             kv_indices = indices
@@ -442,16 +419,16 @@ class KmeansAttention(nn.Module):
             wsz = min(wsz, t)
             c_wsz = min(c_wsz, kv_t)
 
-            if wsz < self.window_size:
-                c_wsz = (self.window_size * self.context_window_size) // wsz
-            indices, loss_1 = self.kmeans(q, wsz)
-            kv_indices, loss_2 = self.kmeans(k, c_wsz)
-            aux_loss = loss_1 + loss_2
+            dists, aux_loss = self.kmeans(torch.cat((q, k), dim=2), update_kmeans)
+            q_dists, k_dists = split_at_index(2, t, dists)
+            indices = distribution(q_dists, wsz)
+            kv_indices = distribution(k_dists, c_wsz)
 
         q = batched_index_select(q, indices)
         k = batched_index_select(k, kv_indices)
         v = batched_index_select(v, kv_indices)
 
+        reshape_with_window = lambda x: x.reshape(b, h, nc, -1, d)
         q, k, v = map(reshape_with_window, (q, k, v))
 
         dots = torch.einsum('bhnid,bhnjd->bhnij', q, k) * (d ** -0.5)
@@ -548,16 +525,13 @@ class SelfAttention(nn.Module):
         if self.global_attn_heads > 0:
             self.global_attn = KmeansAttention(num_clusters, window_size, self.global_attn_heads, head_dim, causal = causal, dropout = attn_dropout, ema_decay = kmeans_ema_decay, commitment = commitment_factor, shared_qk = not receives_context)
 
-        if self.receives_context:
-            self.full_attn = FullAttention(causal = causal, dropout = attn_dropout)
-
         self.to_qk = nn.Linear(dim, dim, bias = False)
         self.to_v = nn.Linear(dim, dim, bias = False)
         self.to_out = nn.Linear(dim, dim, bias = False)
 
         self.dropout = nn.Dropout(dropout)
 
-    def forward(self, x, context = None, input_mask = None, context_mask = None):
+    def forward(self, x, context = None, input_mask = None, context_mask = None, **kwargs):
         assert not (self.receives_context and context is None), 'context must be passed if self attention is set to receive context'
         b, t, e, h = *x.shape, self.heads
         head_dim = e // self.heads
@@ -579,7 +553,7 @@ class SelfAttention(nn.Module):
             has_local, has_global = False, True
 
         out = []
-        total_loss = torch.tensor(0., **to(x)).requires_grad_()
+        total_loss = torch.tensor(0., requires_grad=True, **to(x))
 
         if has_local:
             local_out = self.local_attn(lqk, lqk, lv, input_mask = input_mask)
@@ -588,10 +562,6 @@ class SelfAttention(nn.Module):
         if has_global:
             global_out, loss = self.global_attn(q, k, v, query_mask = input_mask, key_mask = context_mask)
             total_loss = total_loss + loss
-
-            if self.receives_context:
-                full_out = self.full_attn(q[:, :, 0:self.window_size], k, v)
-                global_out = torch.cat((full_out, global_out[:, :, self.window_size:]), dim=2)
 
             out.append(global_out)
 

@@ -1,6 +1,6 @@
 from functools import partial
 import torch
-from random import randint
+import random
 from torch import nn
 import torch.nn.functional as F
 from torch.nn.utils.rnn import pad_sequence
@@ -28,9 +28,15 @@ def top_k(logits, thres = 0.9):
     probs.scatter_(1, ind, val)
     return probs
 
-def pad_sequence_left(seqs, value):
+def pad_sequence_right(seqs, value):
     m = max([len(s) for s in seqs])
-    return torch.stack([F.pad(s, (m - len(s), 0)) for s in seqs])
+    return torch.stack([F.pad(s, (0, m - len(s))) for s in seqs])
+
+def truncate_sequence(inputs, mask = None, pad_value=0):
+    b, t, device, dtype = *inputs.shape, inputs.device, inputs.dtype
+    mask = default(mask, torch.ones_like(inputs).bool())
+    rand_length = random.randint(2, t)
+    return inputs[:, :rand_length], mask[:, :rand_length]
 
 class AutoregressiveWrapper(nn.Module):
     def __init__(self, net, ignore_index = None, pad_value = 0):
@@ -39,7 +45,7 @@ class AutoregressiveWrapper(nn.Module):
         self.pad_value = pad_value
         self.ignore_index = default(ignore_index, pad_value)
 
-        self.net = Autopadder(net)
+        self.net = net
         self.max_seq_len = net.max_seq_len
 
     @torch.no_grad()
@@ -81,7 +87,7 @@ class AutoregressiveWrapper(nn.Module):
         self.net.train(was_training)
         return out
 
-    def forward(self, x, return_loss = False, **kwargs):
+    def forward(self, x, return_loss = False, randomly_truncate_sequence = False, **kwargs):
         pad = partial(pad_sequence, batch_first = True, padding_value = self.pad_value)
 
         if not return_loss:
@@ -90,6 +96,9 @@ class AutoregressiveWrapper(nn.Module):
             return self.net(x, **kwargs)
 
         m = kwargs.pop('input_mask', None)
+
+        if randomly_truncate_sequence:
+            x, m = truncate_sequence(x, m, pad_value = self.pad_value)
 
         if isinstance(x, torch.Tensor):
             xi, xo = x[:, :-1], x[:, 1:]
