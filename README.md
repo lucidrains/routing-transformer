@@ -27,6 +27,7 @@ model = RoutingTransformerLM(
     depth = 12,
     max_seq_len = 8192,
     causal = True,           # auto-regressive or not
+    emb_dim = 128,           # embedding factorization
     attn_dropout = 0.1,      # dropout after attention
     attn_layer_dropout = 0., # dropout after self attention layer
     ff_dropout = 0.1,        # feedforward dropout
@@ -65,6 +66,42 @@ input_mask = torch.ones(1, 8192).bool().cuda()
 
 y, aux_loss = model(x, input_mask = input_mask) # (1, 8192, 512)
 aux_loss.backward() # add auxiliary loss to main loss before backprop
+```
+
+Encoder / decoder
+
+```python
+enc = RoutingTransformerLM(
+    num_tokens = 20000,
+    dim = 512,
+    heads = 8,
+    depth = 6,
+    max_seq_len = 4096,
+    window_size = 128,
+    n_local_attn_heads = 4,
+    return_embeddings = True
+).cuda()
+
+dec = RoutingTransformerLM(
+    num_tokens = 20000,
+    dim = 512,
+    heads = 8,
+    depth = 6,
+    causal = True,
+    max_seq_len = 4096,
+    window_size = 128,
+    n_local_attn_heads = 4,
+    receives_context = True
+).cuda()
+
+src = torch.randint(0, 20000, (1, 4096)).cuda()
+tgt = torch.randint(0, 20000, (1, 4096)).cuda()
+
+src_mask = torch.ones_like(src).bool().cuda()
+tgt_mask = torch.ones_like(tgt).bool().cuda()
+
+context, enc_aux_loss = enc(src, input_mask = src_mask)
+out, dec_aux_loss = dec(tgt, context = context, context_mask = src_mask, input_mask = tgt_mask)
 ```
 
 ## Kmeans Hyperparameters
@@ -118,5 +155,14 @@ Special thanks to <a href="https://github.com/AranKomat">Aran Komatsuzaki</a> fo
     booktitle ={International Conference on Learning Representations},
     year      ={2020},
     url       ={https://openreview.net/forum?id=SylO2yStDr}
+}
+```
+
+```bibtex
+@misc{lan2019albert,
+    title       = {ALBERT: A Lite BERT for Self-supervised Learning of Language Representations},
+    author      = {Zhenzhong Lan and Mingda Chen and Sebastian Goodman and Kevin Gimpel and Piyush Sharma and Radu Soricut},
+    year        = {2019},
+    url         = {https://arxiv.org/abs/1909.11942}
 }
 ```

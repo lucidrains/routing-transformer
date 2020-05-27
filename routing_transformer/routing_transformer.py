@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import math
+from inspect import isfunction
 from operator import mul
 from functools import partial, reduce
 from routing_transformer.reversible import ReversibleSequence, SequentialSequence
@@ -16,8 +17,10 @@ KMEAN_INIT_ITERS = 10
 def identity(x, *args, **kwargs):
     return x
 
-def default(val, default_val):
-    return default_val if val is None else val
+def default(x, d):
+    if x is None:
+        return d if not isfunction(d) else d()
+    return x
 
 def to(t):
     return {'device': t.device, 'dtype': t.dtype}
@@ -64,6 +67,11 @@ def split_at_index(dim, index, t):
     l = (*pre_slices, slice(None, index))
     r = (*pre_slices, slice(index, None))
     return t[l], t[r]
+
+def ema(old, new, decay):
+    if old is None:
+        return new
+    return old * decay + new * (1 - decay)
 
 def ema_inplace(moving_avg, new, decay):
     if is_empty(moving_avg):
@@ -188,6 +196,30 @@ class ParameterList(object):
     def to_list(self):
         return [getattr(self.kls, self._keyname(self.prefix, i)) for i in range(self.length)]
 
+# full attention
+
+class FullAttention(nn.Module):
+    def __init__(self, causal = False, dropout = 0.):
+        super().__init__()
+        self.causal = causal
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, q, k, v, input_mask = None, **kwargs):
+        b, h, t, d = q.shape
+        dot = torch.einsum('bhie,bhje->bhij', q, k) * (d ** -0.5)
+
+        masked_value = max_neg_value(dot)
+
+        if self.causal:
+            i, j = torch.triu_indices(t, t, 1)
+            dot[:, :, i, j] = masked_value
+
+        dot = dot.softmax(dim=-1)
+        dot = self.dropout(dot)
+
+        out = torch.einsum('bhij,bhje->bhie', dot, v)
+        return out
+
 # local attention
 
 class LocalAttention(nn.Module):
@@ -296,10 +328,10 @@ def batched_bincount(index, num_classes, dim=-1):
     return out
 
 def buckets_to_means(x, buckets, num_clusters):
-    b, h, l, d = x.shape
-    means = buckets.new_zeros(b, h, num_clusters, d).float()
-    means.scatter_add_(-2, expand_dim(buckets, -1, d), x.float())
-    return F.normalize(means.sum(0, keepdim=True).type(x.dtype), dim=-1)
+    b, h, l, d, dtype = *x.shape, x.dtype
+    means = buckets.new_zeros(b, h, num_clusters, d, dtype=dtype)
+    means.scatter_add_(-2, expand_dim(buckets, -1, d), x)
+    return F.normalize(means.sum(0, keepdim=True), dim=-1).type(dtype)
 
 def kmeans_iter(x, means):
     num_clusters = means.shape[1]
@@ -314,7 +346,7 @@ def kmeans_iter(x, means):
 def kmeans(x, means, training=True, init=False):
     b, h, t, d = x.shape
     max_iters = 1 if training else 0
-    
+
     if init:
         num_clusters = means.shape[1]
         max_iters = max(KMEAN_INIT_ITERS, max_iters)
@@ -341,12 +373,14 @@ class Kmeans(nn.Module):
         super().__init__()
         self.commitment = commitment
         self.ema_decay = ema_decay
+
         self.register_buffer('means', torch.randn(num_heads, num_clusters, head_dim))
         self.register_buffer('initted', torch.tensor(False))
+        self.new_means = None
 
     def update(self, new_means = None):
         new_means = default(new_means, self.new_means)
-        assert not is_empty(new_means), 'new kmeans has not been supplied'
+        assert new_means is not None, 'new kmeans has not been supplied'
 
         first = not self.initted
         ema_inplace(self.means, new_means, 0. if first else self.ema_decay)
@@ -355,65 +389,83 @@ class Kmeans(nn.Module):
             self.initted = torch.tensor(True)
 
         del self.new_means
+        self.new_means = None
 
     def forward(self, x, window_size):
-        b = x.shape[0]
+        b, dtype = x.shape[0], x.dtype
+        means = self.means.type(dtype)
+        x = F.normalize(x, 2, dim=-1).type(dtype)
 
         with torch.no_grad():
-            means, buckets, dists = kmeans(x, self.means, training=self.training, init=not self.initted)
+            means, buckets, dists = kmeans(x, means, training=self.training, init=not self.initted)
             indices = distribution(dists, window_size)
             indices = indices.contiguous().view(*indices.size()[:2], -1)
 
-        routed_means = batched_index_select(expand_dim(self.means, 0, b), buckets)
+        routed_means = batched_index_select(expand_dim(means, 0, b), buckets)
         loss = F.mse_loss(x, routed_means) * self.commitment
 
         if self.training:
-            self.new_means = means
+            self.new_means = ema(self.new_means, means, 0.5)
 
         return indices, loss
 
 # kmeans attention class
 
 class KmeansAttention(nn.Module):
-    def __init__(self, num_clusters, window_size, num_heads, head_dim, causal = False, dropout = 0., ema_decay = 0.999, commitment = 1e-4):
+    def __init__(self, num_clusters, window_size, num_heads, head_dim, causal = False, dropout = 0., ema_decay = 0.999, commitment = 1e-4, context_window_size = None, shared_qk = True):
         super().__init__()
         self.num_heads = num_heads
         self.num_clusters = num_clusters
         self.head_dim = head_dim
 
         self.window_size = window_size
+        self.context_window_size = default(context_window_size, window_size)
         self.causal = causal
 
+        self.shared_qk = shared_qk
         self.kmeans = Kmeans(num_heads, head_dim, num_clusters, ema_decay, commitment)
-        self.rel_pos = RelativePositionalEmbedding(head_dim, num_heads, window_size)
         self.dropout = nn.Dropout(dropout)
 
-    def forward(self, qk, v, input_mask = None):
-        b, h, t, d, wsz, num_clusters, device, dtype = *qk.shape, self.window_size, self.num_clusters, qk.device, qk.dtype
-        out = torch.zeros_like(qk, dtype=dtype)
+    def forward(self, q, k, v, query_mask = None, key_mask = None):
+        b, h, t, d, kv_t, wsz, c_wsz, nc, device, dtype = *q.shape, k.shape[2], self.window_size, self.context_window_size, self.num_clusters, q.device, q.dtype
+        out = torch.zeros_like(q, dtype=dtype)
 
-        wsz = min(wsz, t)
+        reshape_with_window = lambda x: x.reshape(b, h, nc, -1, d)
 
-        k_routing = F.normalize(qk, dim=-1)
-        indices, commitment_loss = self.kmeans(k_routing, wsz)
-        
-        qk = batched_index_select(qk, indices)
-        v = batched_index_select(v, indices)
+        if self.shared_qk:
+            wsz = min(wsz, t)
+            indices, aux_loss = self.kmeans(k, wsz)
+            k = F.normalize(k, 2, dim=-1).type(dtype)
+            key_mask = query_mask
+            kv_indices = indices
+        else:
+            wsz = min(wsz, t)
+            c_wsz = min(c_wsz, kv_t)
 
-        qk, v = map(lambda x: x.reshape(b, h, num_clusters, wsz, d), (qk, v))
+            if wsz < self.window_size:
+                c_wsz = (self.window_size * self.context_window_size) // wsz
+            indices, loss_1 = self.kmeans(q, wsz)
+            kv_indices, loss_2 = self.kmeans(k, c_wsz)
+            aux_loss = loss_1 + loss_2
 
-        q = qk
-        k = F.normalize(qk, 2, dim=-1).type(qk.dtype)
+        q = batched_index_select(q, indices)
+        k = batched_index_select(k, kv_indices)
+        v = batched_index_select(v, kv_indices)
+
+        q, k, v = map(reshape_with_window, (q, k, v))
 
         dots = torch.einsum('bhnid,bhnjd->bhnij', q, k) * (d ** -0.5)
-        dots = dots + self.rel_pos(q)
 
         mask_value = max_neg_value(dots)
 
-        if input_mask is not None:
-            qk_mask = expand_dim(input_mask, 1, h).gather(2, indices)
-            qk_mask = qk_mask.reshape(b, h, num_clusters, wsz)
-            mask = qk_mask[:, :, :, :, None] * qk_mask[:, :, :, None, :]
+        if query_mask is not None or key_mask is not None:
+            query_mask = default(query_mask, lambda: torch.ones((b, t), device=device).bool())
+            key_mask = default(key_mask, lambda: torch.ones((b, kv_t), device=device).bool())
+
+            q_mask = expand_dim(query_mask, 1, h).gather(2, indices)
+            kv_mask = expand_dim(key_mask, 1, h).gather(2, kv_indices)
+            q_mask, kv_mask = map(lambda t: t.reshape(b, h, nc, -1), (q_mask, kv_mask))
+            mask = q_mask[:, :, :, :, None] * kv_mask[:, :, :, None, :]
             dots.masked_fill_(~mask, mask_value)
             del mask
 
@@ -422,9 +474,10 @@ class KmeansAttention(nn.Module):
             dots.masked_fill_(mask, mask_value)
             del mask
 
-        mask = torch.eye(wsz, device=dots.device).bool()
-        dots.masked_fill_(mask, TOKEN_SELF_ATTN_VALUE)
-        del mask
+        if self.shared_qk:
+            mask = torch.eye(wsz, device=dots.device).bool()
+            dots.masked_fill_(mask, TOKEN_SELF_ATTN_VALUE)
+            del mask
 
         dots = dots.softmax(dim=-1)
         dots = self.dropout(dots)
@@ -432,7 +485,7 @@ class KmeansAttention(nn.Module):
         bo = torch.einsum('bhcij,bhcjd->bhcid', dots, v)
         so = torch.reshape(bo, (b, h, -1, bo.shape[-1])).type(dtype)
         out = scatter_mean(out, so, indices.unsqueeze(-1).expand_as(so), -2)
-        return out, commitment_loss
+        return out, aux_loss
 
 # feedforward
 
@@ -468,16 +521,23 @@ class FeedForward(nn.Module):
 # self attention
 
 class SelfAttention(nn.Module):
-    def __init__(self,  dim, depth, max_seq_len, heads, local_attn_heads, window_size, local_attn_window_size = None, causal = False, attn_dropout = 0., dropout = 0., kmeans_ema_decay = 0.999, commitment_factor = 1e-4):
+    def __init__(self,  dim, depth, max_seq_len, heads, local_attn_heads, window_size, local_attn_window_size = None, causal = False, attn_dropout = 0., dropout = 0., kmeans_ema_decay = 0.999, commitment_factor = 1e-4, receives_context = False, context_window_size = None):
         super().__init__()
         assert (dim % heads) == 0, 'hidden dimension must be divisible by number of heads'
         assert (max_seq_len % window_size) == 0, 'maximum sequence length must be divisible by the target window size'
         assert local_attn_heads <= heads, 'number of local attention heads must be less than total heads'
-        local_attn_window_size = default(local_attn_window_size, window_size // 2)
+        assert not (receives_context and local_attn_heads > 0), 'local attention cannot be used for self attention with context'
+        assert not (receives_context and causal), 'contextual attention layer cannot be causal'
 
+        local_attn_window_size = default(local_attn_window_size, window_size // 2)
+        context_window_size = default(context_window_size, window_size)
+
+        self.receives_context = receives_context
         self.heads = heads
         self.local_attn_heads = local_attn_heads
         self.global_attn_heads = heads - local_attn_heads
+
+        self.window_size = window_size
 
         head_dim = dim // heads
         num_clusters = max_seq_len // window_size
@@ -486,34 +546,53 @@ class SelfAttention(nn.Module):
             self.local_attn = LocalAttention(local_attn_window_size, local_attn_heads, head_dim, causal = True, shared_qk = True, dropout = attn_dropout)
 
         if self.global_attn_heads > 0:
-            self.global_attn = KmeansAttention(num_clusters, window_size, self.global_attn_heads, head_dim, causal = causal, dropout = attn_dropout, ema_decay = kmeans_ema_decay, commitment = commitment_factor)
+            self.global_attn = KmeansAttention(num_clusters, window_size, self.global_attn_heads, head_dim, causal = causal, dropout = attn_dropout, ema_decay = kmeans_ema_decay, commitment = commitment_factor, shared_qk = not receives_context)
 
-        self.to_qkv = nn.Linear(dim, dim * 2, bias = False)
+        if self.receives_context:
+            self.full_attn = FullAttention(causal = causal, dropout = attn_dropout)
+
+        self.to_qk = nn.Linear(dim, dim, bias = False)
+        self.to_v = nn.Linear(dim, dim, bias = False)
         self.to_out = nn.Linear(dim, dim, bias = False)
 
         self.dropout = nn.Dropout(dropout)
 
-    def forward(self, x, input_mask = None):
+    def forward(self, x, context = None, input_mask = None, context_mask = None):
+        assert not (self.receives_context and context is None), 'context must be passed if self attention is set to receive context'
         b, t, e, h = *x.shape, self.heads
+        head_dim = e // self.heads
 
-        qk, v = self.to_qkv(x).chunk(2, dim=-1)
-        split_heads = lambda v: v.reshape(b, t, h, -1).transpose(1, 2).contiguous()
-        qk, v = map(split_heads, (qk, v))
+        split_heads = lambda v: v.reshape(b, -1, h, head_dim).transpose(1, 2).contiguous()
 
-        split_index_fn = partial(split_at_index, 1, self.local_attn_heads)
-        (lqk, qk), (lv, v) = map(split_index_fn, (qk, v))
-        has_local, has_global = map(lambda x: x.shape[1] > 0, (lqk, qk))
+        if not self.receives_context:
+            qk, v = self.to_qk(x), self.to_v(x)
+
+            qk, v = map(split_heads, (qk, v))
+            split_index_fn = partial(split_at_index, 1, self.local_attn_heads)
+            (lqk, qk), (lv, v) = map(split_index_fn, (qk, v))
+            has_local, has_global = map(lambda x: x.shape[1] > 0, (lqk, qk))
+
+            q, k, v = qk, qk, v
+        else:
+            q, k, v = self.to_qk(x), self.to_qk(context), self.to_v(context)
+            q, k, v = map(split_heads, (q, k, v))
+            has_local, has_global = False, True
 
         out = []
         total_loss = torch.tensor(0., **to(x)).requires_grad_()
 
         if has_local:
-            local_out = self.local_attn(lqk, lqk, lv, input_mask = input_mask)
+            local_out = self.local_attn(q, k, v, input_mask = input_mask)
             out.append(local_out)
 
         if has_global:
-            global_out, loss = self.global_attn(qk, v, input_mask = input_mask)
+            global_out, loss = self.global_attn(q, k, v, query_mask = input_mask, key_mask = context_mask)
             total_loss = total_loss + loss
+
+            if self.receives_context:
+                full_out = self.full_attn(q[:, :, 0:self.window_size], k, v)
+                global_out = torch.cat((full_out, global_out[:, :, self.window_size:]), dim=2)
+
             out.append(global_out)
 
         out = torch.cat(out, dim=1)
@@ -522,7 +601,7 @@ class SelfAttention(nn.Module):
         return self.dropout(out), total_loss
 
 class RoutingTransformer(nn.Module):
-    def __init__(self, dim, depth, max_seq_len, heads = 8, window_size = 64, local_attn_window_size = None, causal = False, attn_dropout = 0., ff_dropout = 0., attn_layer_dropout = 0., layer_dropout = 0., n_local_attn_heads = 0, ff_glu = False, reversible = False, ff_chunks = 1, kmeans_ema_decay = 0.999, commitment_factor = 1e-4):
+    def __init__(self, dim, depth, max_seq_len, heads = 8, window_size = 64, local_attn_window_size = None, causal = False, attn_dropout = 0., ff_dropout = 0., attn_layer_dropout = 0., layer_dropout = 0., n_local_attn_heads = 0, ff_glu = False, reversible = False, ff_chunks = 1, kmeans_ema_decay = 0.999, commitment_factor = 1e-4, receives_context = False, context_window_size = None):
         super().__init__()
         local_attn_window_size = default(local_attn_window_size, window_size // 2)
         if type(n_local_attn_heads) is not tuple:
@@ -535,34 +614,44 @@ class RoutingTransformer(nn.Module):
         fn_wrapper = partial(PreNorm, dim)
 
         for ind, local_heads in zip(range(depth), n_local_attn_heads):
-            attn = SelfAttention(dim, depth, max_seq_len, heads, local_heads, window_size, causal = causal, local_attn_window_size = local_attn_window_size, attn_dropout = attn_dropout, dropout = attn_layer_dropout, kmeans_ema_decay = kmeans_ema_decay, commitment_factor = 1e-4)
+            attn = SelfAttention(dim, depth, max_seq_len, heads, local_heads, window_size, causal = causal, local_attn_window_size = local_attn_window_size, attn_dropout = attn_dropout, dropout = attn_layer_dropout, kmeans_ema_decay = kmeans_ema_decay, commitment_factor = commitment_factor)
             ff = Chunk(ff_chunks, FeedForward(dim, dropout = ff_dropout, glu = ff_glu), along_dim=1)
 
             attn, ff = map(fn_wrapper, (attn, ff))
             layers.append(nn.ModuleList([attn, ff]))
 
+            if not receives_context:
+                continue
+
+            context_attn = SelfAttention(dim, depth, max_seq_len, heads, 0, window_size, local_attn_window_size = local_attn_window_size, attn_dropout = attn_dropout, dropout = attn_layer_dropout, kmeans_ema_decay = kmeans_ema_decay, commitment_factor = commitment_factor, receives_context = True, context_window_size = context_window_size)
+            context_ff = Chunk(ff_chunks, FeedForward(dim, dropout = ff_dropout, glu = ff_glu), along_dim=1)
+            layers.append(nn.ModuleList([context_attn, context_ff]))
+
         execute_type = ReversibleSequence if reversible else SequentialSequence
 
-        route_attn = ((True, False),) * depth
+        attn_context_layer = ((True, False),) if receives_context else tuple()
+        route_attn = ((True, False), *attn_context_layer) * depth
+        route_context = ((False, False), *attn_context_layer) * depth
+
+        context_route_map = {'context': route_context, 'context_mask': route_context} if receives_context else {}
         attn_route_map = {'input_mask': route_attn}
-        self.layers = execute_type(layers, args_route = {**attn_route_map}, layer_dropout = layer_dropout)
+        self.layers = execute_type(layers, args_route = {**attn_route_map, **context_route_map}, layer_dropout = layer_dropout)
 
         self.pad_to_window_size = local_attn_window_size
-        update_kmeans_on_backwards(self)        
 
     def forward(self, x, **kwargs):
         x, loss = self.layers(x, **kwargs)
         return x, loss
 
 class RoutingTransformerLM(nn.Module):
-    def __init__(self, num_tokens, dim, depth, max_seq_len, heads = 8, window_size = 64, local_attn_window_size = None, causal = False, emb_dim = None, attn_dropout = 0., ff_dropout = 0., attn_layer_dropout = 0., layer_dropout = 0., ff_mult = 4, ff_activation = None, ff_glu = False, return_embeddings = False, n_local_attn_heads = 0, reversible = False, ff_chunks = 1, kmeans_ema_decay = 0.999, commitment_factor = 1e-4):
+    def __init__(self, num_tokens, dim, depth, max_seq_len, heads = 8, window_size = 64, local_attn_window_size = None, causal = False, emb_dim = None, attn_dropout = 0., ff_dropout = 0., attn_layer_dropout = 0., layer_dropout = 0., ff_mult = 4, ff_activation = None, ff_glu = False, return_embeddings = False, n_local_attn_heads = 0, reversible = False, ff_chunks = 1, kmeans_ema_decay = 0.999, commitment_factor = 1e-4, receives_context = False, context_window_size = None):
         super().__init__()
         emb_dim = default(emb_dim, dim)
         self.max_seq_len = max_seq_len
 
         self.token_emb = nn.Embedding(num_tokens, emb_dim)
         self.axial_pos_emb = AxialPositionalEmbedding(emb_dim, max_seq_len, axial_shape=(max_seq_len // window_size, window_size))
-        self.routing_transformer = RoutingTransformer(dim, depth, max_seq_len, heads = heads, window_size = window_size, local_attn_window_size = local_attn_window_size, causal = causal, ff_dropout = ff_dropout, attn_dropout = attn_dropout, attn_layer_dropout = attn_layer_dropout, layer_dropout = layer_dropout, n_local_attn_heads = n_local_attn_heads, ff_glu = ff_glu, reversible = reversible, ff_chunks = ff_chunks, kmeans_ema_decay = kmeans_ema_decay)
+        self.routing_transformer = RoutingTransformer(dim, depth, max_seq_len, heads = heads, window_size = window_size, local_attn_window_size = local_attn_window_size, causal = causal, ff_dropout = ff_dropout, attn_dropout = attn_dropout, attn_layer_dropout = attn_layer_dropout, layer_dropout = layer_dropout, n_local_attn_heads = n_local_attn_heads, ff_glu = ff_glu, reversible = reversible, ff_chunks = ff_chunks, kmeans_ema_decay = kmeans_ema_decay, receives_context = receives_context, context_window_size = context_window_size)
 
         if emb_dim != dim:
             self.routing_transformer = ProjectInOut(self.routing_transformer, emb_dim, dim, project_out = not return_embeddings)
