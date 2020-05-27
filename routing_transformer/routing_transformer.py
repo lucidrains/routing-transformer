@@ -5,6 +5,7 @@ import math
 from inspect import isfunction
 from operator import mul
 from functools import partial, reduce
+from routing_transformer.autopadder import Autopadder
 from routing_transformer.reversible import ReversibleSequence, SequentialSequence
 
 # constants
@@ -521,6 +522,7 @@ class SelfAttention(nn.Module):
 
         if self.local_attn_heads > 0:
             self.local_attn = LocalAttention(local_attn_window_size, local_attn_heads, head_dim, causal = True, shared_qk = True, dropout = attn_dropout)
+            self.local_attn = Autopadder(self.local_attn, local_attn_window_size)
 
         if self.global_attn_heads > 0:
             self.global_attn = KmeansAttention(num_clusters, window_size, self.global_attn_heads, head_dim, causal = causal, dropout = attn_dropout, ema_decay = kmeans_ema_decay, commitment = commitment_factor, shared_qk = not receives_context)
@@ -606,8 +608,6 @@ class RoutingTransformer(nn.Module):
         context_route_map = {'context': route_context, 'context_mask': route_context} if receives_context else {}
         attn_route_map = {'input_mask': route_attn}
         self.layers = execute_type(layers, args_route = {**attn_route_map, **context_route_map}, layer_dropout = layer_dropout)
-
-        self.pad_to_window_size = local_attn_window_size
 
     def forward(self, x, **kwargs):
         x, loss = self.layers(x, **kwargs)
