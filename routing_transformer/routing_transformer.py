@@ -582,7 +582,7 @@ class SelfAttention(nn.Module):
         total_loss = torch.tensor(0., **to(x)).requires_grad_()
 
         if has_local:
-            local_out = self.local_attn(q, k, v, input_mask = input_mask)
+            local_out = self.local_attn(lqk, lqk, lv, input_mask = input_mask)
             out.append(local_out)
 
         if has_global:
