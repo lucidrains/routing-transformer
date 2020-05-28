@@ -112,7 +112,7 @@ for i, (data, mask) in enumerate(trainloader):
             loss = model(inp[None, :].cuda(), return_loss = True)
             print(f'validation loss: {loss.item()}')
 
-    if model_engine.local_rank == 0 and i % GENERATE_EVERY == 0:
+    if i != 0 and model_engine.local_rank == 0 and i % GENERATE_EVERY == 0:
         model.eval()
         inp, _ = random.choice(val_dataset)
         print(inp.shape, inp)

@@ -26,5 +26,6 @@
       "warmup_num_steps": 1000
     }
   },
+  "zero_optimization": true,
   "wall_clock_breakdown": false
 }
