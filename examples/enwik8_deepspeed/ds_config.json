@@ -15,6 +15,9 @@
       "weight_decay": 3e-7
     }
   },
+  "fp16": {
+    "enabled": true
+  },
   "scheduler": {
     "type": "WarmupLR",
     "params": {

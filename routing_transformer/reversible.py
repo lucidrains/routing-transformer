@@ -25,7 +25,7 @@ def layer_drop(layers, prob):
 
 def cast_return(ret, requires_grad = True):
     if type(ret) is not tuple:
-        loss = torch.tensor(0., device=ret.device, requires_grad=requires_grad)
+        loss = torch.tensor(0., device=ret.device, dtype=ret.dtype, requires_grad=requires_grad)
         return (ret, loss)
     return ret
 

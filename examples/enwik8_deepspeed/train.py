@@ -81,7 +81,7 @@ class TextSamplerDataset(Dataset):
     def __getitem__(self, index):
         rand_start = torch.randint(0, self.data.size(0) - self.seq_len - 1, (1,))
         full_seq = self.data[rand_start: rand_start + self.seq_len + 1].long()
-        return full_seq
+        return full_seq, torch.ones_like(full_seq).bool()
 
     def __len__(self):
         return self.data.size(0) // self.seq_len
@@ -96,10 +96,11 @@ model_engine, optimizer, trainloader, _ = deepspeed.initialize(args=cmd_args, mo
 
 # training
 
-for i, data in enumerate(trainloader):
+for i, (data, mask) in enumerate(trainloader):
     model_engine.train()
+
     data = data.to(model_engine.local_rank)
-    loss = model_engine(data, return_loss = True)
+    loss = model_engine(data, return_loss = True, randomly_truncate_sequence = True)
     model_engine.backward(loss)
     model_engine.step()
     print(loss.item() * 4)
@@ -107,13 +108,14 @@ for i, data in enumerate(trainloader):
     if i % VALIDATE_EVERY == 0:
         model.eval()
         with torch.no_grad():
-            inp = random.choice(val_dataset)
+            inp, _ = random.choice(val_dataset)
             loss = model(inp[None, :].cuda(), return_loss = True)
             print(f'validation loss: {loss.item()}')
 
     if model_engine.local_rank == 0 and i % GENERATE_EVERY == 0:
         model.eval()
-        inp = random.choice(val_dataset)[:-1]
+        inp, _ = random.choice(val_dataset)
+        print(inp.shape, inp)
         prime = decode_tokens(inp)
         print(f'%s \n\n %s', (prime, '*' * 100))
 
