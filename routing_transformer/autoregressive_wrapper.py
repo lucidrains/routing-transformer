@@ -45,7 +45,7 @@ class AutoregressiveWrapper(nn.Module):
         self.pad_value = pad_value
         self.ignore_index = default(ignore_index, pad_value)
 
-        self.net = net
+        self.net = Autopadder(net)
         self.max_seq_len = net.max_seq_len
 
     @torch.no_grad()

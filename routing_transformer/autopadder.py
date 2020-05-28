@@ -1,7 +1,14 @@
 import math
 import torch
 from torch import nn
+from routing_transformer.routing_transformer import RoutingTransformer
 import torch.nn.functional as F
+
+def find_module(nn_module, type):
+    for module in nn_module.modules():
+        if isinstance(module, type):
+            return module
+    return None
 
 def pad_to_multiple(tensor, multiple, dim=-1, value=0):
     seqlen = tensor.shape[dim]
@@ -15,23 +22,23 @@ def pad_to_multiple(tensor, multiple, dim=-1, value=0):
     return padded_tensor
 
 class Autopadder(nn.Module):
-    def __init__(self, net, pad_multiple):
+    def __init__(self, net):
         super().__init__()
+        transformer = find_module(net, RoutingTransformer)
         self.net = net
-        self.pad_multiple = pad_multiple
+        self.pad_multiple = transformer.pad_to_multiple
 
-    def forward(self, *args, **kwargs):
-        q, args = args[0], list(args)
-        b, h, t, _, device = *q.shape, q.device
+    def forward(self, x, **kwargs):
+        b, t, device = *x.shape, x.device
 
         input_mask = kwargs.get('input_mask')
 
         if input_mask is None:
             input_mask = torch.full((b, t), True, device=device, dtype=torch.bool)
 
-        args = map(lambda t: pad_to_multiple(t, self.pad_multiple, dim=-2), args)
-        new_mask = pad_to_multiple(input_mask, self.pad_multiple, dim=-1, value=False)
+        x = pad_to_multiple(x, self.pad_multiple, dim=1)
+        new_mask = pad_to_multiple(input_mask, self.pad_multiple, dim=1, value=False)
         kwargs.update(input_mask=new_mask)
 
-        out = self.net(*args, **kwargs)
-        return out[:, :, 0:t]
+        out, loss = self.net(x, **kwargs)
+        return out[:, 0:t], loss
