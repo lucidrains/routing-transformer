@@ -388,14 +388,14 @@ class Kmeans(nn.Module):
         with torch.no_grad():
             dists, buckets = dists_and_buckets(x, means)
 
+        routed_means = batched_index_select(expand_dim(means, 0, b), buckets)
+        loss = F.mse_loss(x, routed_means) * self.commitment
+
         if update_means:
             with torch.no_grad():
                 means = kmeans_iter(x, means, buckets)
             self.new_means = ema(self.new_means, means, self.num_new_means / (self.num_new_means + 1))
             self.num_new_means += 1
-
-        routed_means = batched_index_select(expand_dim(means, 0, b), buckets)
-        loss = F.mse_loss(x, routed_means) * self.commitment
 
         return dists, loss
 
