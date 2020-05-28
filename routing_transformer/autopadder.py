@@ -29,6 +29,9 @@ class Autopadder(nn.Module):
         self.pad_multiple = transformer.pad_to_multiple
 
     def forward(self, x, **kwargs):
+        if self.pad_multiple <= 0:
+            return self.net(x, **kwargs)
+
         b, t, device = *x.shape, x.device
 
         input_mask = kwargs.get('input_mask')

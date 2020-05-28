@@ -635,7 +635,8 @@ class RoutingTransformer(nn.Module):
         if _register_kmeans_update:
             update_kmeans_on_backwards(self)
 
-        self.pad_to_multiple = local_attn_window_size
+        has_local_attn = any([num > 0 for num in n_local_attn_heads])
+        self.pad_to_multiple = local_attn_window_size if has_local_attn else 0
 
     def forward(self, x, **kwargs):
         x, loss = self.layers(x, **kwargs)
