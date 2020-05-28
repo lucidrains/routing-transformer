@@ -103,7 +103,7 @@ for i, (data, mask) in enumerate(trainloader):
     loss = model_engine(data, return_loss = True, randomly_truncate_sequence = True)
     model_engine.backward(loss)
     model_engine.step()
-    print(loss.item() * 4)
+    print(loss.item())
 
     if i % VALIDATE_EVERY == 0:
         model.eval()
