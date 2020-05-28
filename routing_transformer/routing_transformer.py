@@ -608,19 +608,18 @@ class RoutingTransformer(nn.Module):
             get_attn, get_ff, get_context_attn, get_context_ff = map(cache_fn, (get_attn, get_ff, get_context_attn, get_context_ff))
 
         for ind, local_heads in zip(range(depth), n_local_attn_heads):
-            attn = get_attn(local_heads)
-            ff = get_ff()
-
-            attn, ff = map(fn_wrapper, (attn, ff))
-            layers.append(nn.ModuleList([attn, ff]))
+            layers.append(nn.ModuleList([
+                fn_wrapper(get_attn(local_heads)),
+                fn_wrapper(get_ff())
+            ]))
 
             if not receives_context:
                 continue
 
-            context_attn = get_context_attn()
-            context_ff = get_context_ff()
-            context_attn, context_ff = map(fn_wrapper, (context_attn, context_ff))
-            layers.append(nn.ModuleList([context_attn, context_ff]))
+            layers.append(nn.ModuleList([
+                fn_wrapper(get_context_attn()),
+                fn_wrapper(get_context_ff())
+            ]))
 
         execute_type = ReversibleSequence if reversible else SequentialSequence
 
