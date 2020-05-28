@@ -91,10 +91,7 @@ model = RoutingTransformerEncDec(
     dec_heads = 8,
     dec_max_seq_len = 4096,
     dec_window_size = 128,
-)
-
-model.cuda()
-model.train()
+).cuda()
 
 src = torch.randint(0, 20000, (1, 4096)).cuda()
 tgt = torch.randint(0, 20000, (1, 4096)).cuda()
