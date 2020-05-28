@@ -10,7 +10,6 @@ NUM_BATCHES = int(1e5)
 BATCH_SIZE = 32
 LEARNING_RATE = 1e-4
 GENERATE_EVERY  = 100
-
 NUM_TOKENS = 256 + 2
 ENC_SEQ_LEN = 128
 DEC_SEQ_LEN = 256
@@ -19,15 +18,11 @@ DEC_SEQ_LEN = 256
 
 def cycle():
     while True:
-        src = torch.randint(2, NUM_TOKENS, (BATCH_SIZE, ENC_SEQ_LEN)).long().cuda()
-
-        tgt = torch.cat((src, src), 1)
         prefix = torch.ones((BATCH_SIZE, 1)).long().cuda()
-        tgt = torch.cat((prefix, tgt), axis=1)
+        src = torch.randint(2, NUM_TOKENS, (BATCH_SIZE, ENC_SEQ_LEN)).long().cuda()
+        tgt = torch.cat((prefix, src, src), 1)
         src_mask = torch.ones(BATCH_SIZE, ENC_SEQ_LEN).bool().cuda()
-
         tgt_mask = torch.ones(BATCH_SIZE, tgt.shape[1]).bool().cuda()
-
         yield (src, tgt, src_mask, tgt_mask)
 
 # instantiate model

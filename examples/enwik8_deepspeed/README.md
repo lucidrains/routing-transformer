@@ -1,6 +1,6 @@
-# Sinkhorn Transformer with Deepspeed for Enwik8
+# Routing Transformer with Deepspeed for Enwik8
 
-Deepspeed is the framework Microsoft used to train the world's largest Attention model (17GB) to date. They have open sourced it, and it works with Sinkhorn Transformers!
+Deepspeed is the framework Microsoft used to train the world's largest Attention model (17GB) to date. They have open sourced it, and it works with Routing Transformers!
 
 1. First install Deepspeed following instructions from their official repository https://github.com/microsoft/DeepSpeed
 

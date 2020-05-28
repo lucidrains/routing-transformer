@@ -278,8 +278,8 @@ class LocalAttention(nn.Module):
             input_mask = input_mask.reshape(-1, buckets, bucket_size)
             mq = mk = input_mask
             mk = look_around(mk, pad_value=False, **look_around_kwargs)
-            mask = (mq[:, None, :, :, None] * mk[:, None, :, None, :])
-            mask = merge_dims(0, 1, mask.expand(-1, h, -1, -1, -1))
+            mask = (mq[:, :, :, None] * mk[:, :, None, :])
+            mask = merge_dims(0, 1, expand_dim(mask, 1, h))
             dots.masked_fill_(~mask, mask_value)
             del mask
 
