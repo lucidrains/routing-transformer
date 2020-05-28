@@ -364,9 +364,9 @@ class Kmeans(nn.Module):
         for _ in range(KMEAN_INIT_ITERS):
             means = kmeans_iter(x, means)
 
-        self.means = means
         self.num_new_means = 0
-        self.initted = torch.tensor(True)
+        self.means.data.copy_(means)
+        self.initted.data.copy_(torch.tensor(True))
 
     @torch.no_grad()
     def update(self, new_means = None):
