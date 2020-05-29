@@ -59,6 +59,7 @@ model = RoutingTransformerLM(
     reversible = True,
     ff_chunks = 2,
     attn_dropout = 0.1,
+    rel_pos_emb = False,
     n_local_attn_heads = (8, 8, 8, 8, 4, 4, 2, 2)
 )
 
