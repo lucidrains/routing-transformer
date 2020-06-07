@@ -110,6 +110,12 @@ start_tokens = torch.ones(1, 1).long().cuda() # assume starting token is 1
 sample = model.generate(src, start_tokens, seq_len = 2048, eos_token = 2) # (1, <= 2048, 20000)
 ```
 
+## Product Key Memory
+
+To see the benefits of using PKM, the learning rate of the values must be set higher than the rest of the parameters. (Recommended to be `1e-2`)
+
+You can follow the instructions here to set it correctly https://github.com/lucidrains/product-key-memory#learning-rates
+
 ## Kmeans Hyperparameters
 
 1. `kmeans_ema_decay = {defaults to 0.999}`

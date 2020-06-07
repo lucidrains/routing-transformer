@@ -265,7 +265,6 @@ class LocalAttention(nn.Module):
 
         mask_value = max_neg_value(dots)
 
-
         if shared_qk:
             mask = bq_t[:, :, :, None] == bq_k[:, :, None, :]
             dots.masked_fill_(mask, TOKEN_SELF_ATTN_VALUE)
@@ -596,8 +595,6 @@ class SelfAttention(nn.Module):
 class RoutingTransformer(nn.Module):
     def __init__(self, dim, depth, max_seq_len, heads = 8, window_size = 64, local_attn_window_size = None, causal = False, weight_tie = False, attn_dropout = 0., ff_dropout = 0., attn_layer_dropout = 0., layer_dropout = 0., n_local_attn_heads = 0, ff_glu = False, reversible = False, ff_chunks = 1, kmeans_ema_decay = 0.999, commitment_factor = 1e-4, receives_context = False, context_window_size = None, _register_kmeans_update = False, rel_pos_emb = True, pkm_layers = tuple(), pkm_num_keys = 128):
         super().__init__()
-        pkm_layers = cast_tuple(pkm_layers)
-
         local_attn_window_size = default(local_attn_window_size, window_size // 2)
         if type(n_local_attn_heads) is not tuple:
             n_local_attn_heads = tuple([n_local_attn_heads] * depth)
@@ -612,7 +609,7 @@ class RoutingTransformer(nn.Module):
         get_ff = lambda: Chunk(ff_chunks, FeedForward(dim, dropout = ff_dropout, glu = ff_glu), along_dim=1)
         get_context_attn = lambda: SelfAttention(dim, depth, max_seq_len, heads, 0, window_size, local_attn_window_size = local_attn_window_size, attn_dropout = attn_dropout, dropout = attn_layer_dropout, kmeans_ema_decay = kmeans_ema_decay, commitment_factor = commitment_factor, receives_context = True, context_window_size = context_window_size)
         get_context_ff = lambda: Chunk(ff_chunks, FeedForward(dim, dropout = ff_dropout, glu = ff_glu), along_dim=1)
-        get_pkm = lambda: PKM(dim, num_keys = pkm_num_keys)
+        get_pkm = lambda: PKM(dim, num_keys = pkm_num_keys, use_evonorm = False)
 
         if weight_tie:
             assert len(set(n_local_attn_heads)) == 1, 'you can only weight tie if number of local attention heads for all layers is the same'
@@ -620,7 +617,7 @@ class RoutingTransformer(nn.Module):
 
         for ind, local_heads in zip(range(depth), n_local_attn_heads):
             layer = ind + 1
-            use_ff = layer not in pkm_layers
+            use_ff = layer not in cast_tuple(pkm_layers)
             get_parallel_fn = get_ff if use_ff else get_pkm
 
             layers.append(nn.ModuleList([
