@@ -40,6 +40,8 @@ model = RoutingTransformerLM(
     reversible = True,       # reversible networks for memory savings, from Reformer paper
     ff_chunks = 10,          # feed forward chunking, from Reformer paper
     ff_glu = True,           # use GLU variant in feedforward
+    pkm_layers = (4,7),      # specify layers to use product key memory. paper shows 1 or 2 modules near the middle of the transformer is best
+    pkm_num_keys = 128,      # defaults to 128, but can be increased to 256 or 512 as memory allows
 ).cuda()
 
 x = torch.randint(0, 20000, (1, 8192)).long().cuda()
@@ -195,5 +197,15 @@ Special thanks to <a href="https://github.com/AranKomat">Aran Komatsuzaki</a> fo
     author      = {Zhenzhong Lan and Mingda Chen and Sebastian Goodman and Kevin Gimpel and Piyush Sharma and Radu Soricut},
     year        = {2019},
     url         = {https://arxiv.org/abs/1909.11942}
+}
+```
+
+```bibtex
+@misc{lample2019large,
+    title   = {Large Memory Layers with Product Keys},
+    author  = {Guillaume Lample and Alexandre Sablayrolles and Marc'Aurelio Ranzato and Ludovic Denoyer and Hervé Jégou},
+    year    = {2019},
+    eprint  = {1907.05242},
+    archivePrefix = {arXiv}
 }
 ```
