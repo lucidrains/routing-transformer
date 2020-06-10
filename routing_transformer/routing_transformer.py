@@ -94,7 +94,7 @@ def ema_inplace(moving_avg, new, decay):
     if is_empty(moving_avg):
         moving_avg.data.copy_(new)
         return
-    moving_avg.data.mul_(decay).add_(1 - decay, new)
+    moving_avg.data.mul_(decay).add_(new, alpha= (1 - decay))
 
 # helper classes
 
