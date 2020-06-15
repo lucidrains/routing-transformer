@@ -292,8 +292,7 @@ def kmeans_iter(x, means, buckets = None):
 
 def distribution(dists, window_size):
     _, topk_indices = dists.topk(k=window_size, dim=-2)
-    sort_val, _ = topk_indices.sort(dim=-2)
-    indices = sort_val.transpose(-2, -1)
+    indices = topk_indices.transpose(-2, -1)
     return indices.reshape(*indices.size()[:2], -1)
 
 class Kmeans(nn.Module):
@@ -360,7 +359,7 @@ class Kmeans(nn.Module):
 # kmeans attention class
 
 class KmeansAttention(nn.Module):
-    def __init__(self, num_clusters, window_size, num_heads, head_dim, causal = False, dropout = 0., ema_decay = 0.999, commitment = 1e-4, context_window_size = None, shared_qk = True):
+    def __init__(self, num_clusters, window_size, num_heads, head_dim, causal = False, dropout = 0., ema_decay = 0.999, commitment = 1e-4, context_window_size = None, receives_context = False):
         super().__init__()
         self.num_heads = num_heads
         self.num_clusters = num_clusters
@@ -370,7 +369,7 @@ class KmeansAttention(nn.Module):
         self.context_window_size = default(context_window_size, window_size)
         self.causal = causal
 
-        self.shared_qk = shared_qk
+        self.receives_context = receives_context
         self.kmeans = Kmeans(num_heads, head_dim, num_clusters, ema_decay, commitment)
         self.dropout = nn.Dropout(dropout)
 
@@ -381,22 +380,18 @@ class KmeansAttention(nn.Module):
         out = torch.zeros_like(q, dtype=dtype)
 
         update_kmeans = self.training and not is_reverse
+        
+        key_mask = default(key_mask, query_mask) if not self.receives_context else key_mask
+        kv_wsz = wsz if not self.receives_context else c_wsz
 
-        if self.shared_qk:
-            wsz = min(wsz, t)
-            dists, aux_loss = self.kmeans(k, update_kmeans)
-            indices = distribution(dists, wsz)
-            k = F.normalize(k, 2, dim=-1).type(dtype)
-            key_mask = query_mask
-            kv_indices = indices
-        else:
-            wsz = min(wsz, t)
-            c_wsz = min(c_wsz, kv_t)
+        wsz = min(wsz, t)
+        kv_wsz = min(kv_wsz, kv_t)
 
-            dists, aux_loss = self.kmeans(torch.cat((q, k), dim=2), update_kmeans)
-            q_dists, k_dists = split_at_index(2, t, dists)
-            indices = distribution(q_dists, wsz)
-            kv_indices = distribution(k_dists, c_wsz)
+        dists, aux_loss = self.kmeans(torch.cat((q, k), dim=2), update_kmeans)
+        q_dists, k_dists = split_at_index(2, t, dists)
+
+        indices = distribution(q_dists, wsz)
+        kv_indices = distribution(k_dists, kv_wsz)
 
         q = batched_index_select(q, indices)
         k = batched_index_select(k, kv_indices)
@@ -421,14 +416,10 @@ class KmeansAttention(nn.Module):
             del mask
 
         if self.causal:
-            mask = torch.ones(wsz, wsz, device=device).byte().triu_(1).bool()
+            q_mask, kv_mask = map(lambda t: t.reshape(b, h, nc, -1), (indices, kv_indices))
+            mask = q_mask[:, :, :, :, None] < kv_mask[:, :, :, None, :]
             dots.masked_fill_(mask, mask_value)
-            del mask
-
-        if self.shared_qk:
-            mask = torch.eye(wsz, device=dots.device).bool()
-            dots.masked_fill_(mask, TOKEN_SELF_ATTN_VALUE)
-            del mask
+            del mask            
 
         dots = dots.softmax(dim=-1)
         dots = self.dropout(dots)
@@ -494,12 +485,13 @@ class SelfAttention(nn.Module):
         num_clusters = max_seq_len // window_size
 
         if self.local_attn_heads > 0:
-            self.local_attn = LocalAttention(local_attn_window_size, local_attn_heads, head_dim, causal = True, shared_qk = True, dropout = attn_dropout, rel_pos_emb = rel_pos_emb)
+            self.local_attn = LocalAttention(local_attn_window_size, local_attn_heads, head_dim, causal = True, dropout = attn_dropout, rel_pos_emb = rel_pos_emb)
 
         if self.global_attn_heads > 0:
-            self.global_attn = KmeansAttention(num_clusters, window_size, self.global_attn_heads, head_dim, causal = causal, dropout = attn_dropout, ema_decay = kmeans_ema_decay, commitment = commitment_factor, shared_qk = not receives_context)
+            self.global_attn = KmeansAttention(num_clusters, window_size, self.global_attn_heads, head_dim, causal = causal, dropout = attn_dropout, ema_decay = kmeans_ema_decay, commitment = commitment_factor, receives_context = receives_context)
 
-        self.to_qk = nn.Linear(dim, dim, bias = False)
+        self.to_q = nn.Linear(dim, dim, bias = False)
+        self.to_k = nn.Linear(dim, dim, bias = False)
         self.to_v = nn.Linear(dim, dim, bias = False)
         self.to_out = nn.Linear(dim, dim, bias = False)
 
@@ -512,25 +504,20 @@ class SelfAttention(nn.Module):
 
         split_heads = lambda v: v.reshape(b, -1, h, head_dim).transpose(1, 2).contiguous()
 
-        if not self.receives_context:
-            qk, v = self.to_qk(x), self.to_v(x)
+        kv_input = x if not self.receives_context else context
 
-            qk, v = map(split_heads, (qk, v))
-            split_index_fn = partial(split_at_index, 1, self.local_attn_heads)
-            (lqk, qk), (lv, v) = map(split_index_fn, (qk, v))
-            has_local, has_global = map(lambda x: x.shape[1] > 0, (lqk, qk))
+        q, k, v = self.to_q(x), self.to_k(kv_input), self.to_v(kv_input)
+        q, k, v = map(split_heads, (q, k, v))
 
-            q, k, v = qk, qk, v
-        else:
-            q, k, v = self.to_qk(x), self.to_qk(context), self.to_v(context)
-            q, k, v = map(split_heads, (q, k, v))
-            has_local, has_global = False, True
+        split_index_fn = partial(split_at_index, 1, self.local_attn_heads)
+        (lq, q), (lk, k), (lv, v) = map(split_index_fn, (q, k, v))
+        has_local, has_global = map(lambda x: x.shape[1] > 0, (lq, q))
 
         out = []
         total_loss = torch.tensor(0., requires_grad=True, **to(x))
 
         if has_local:
-            local_out = self.local_attn(lqk, lqk, lv, input_mask = input_mask)
+            local_out = self.local_attn(lq, lk, lv, input_mask = input_mask)
             out.append(local_out)
 
         if has_global:
