@@ -312,10 +312,16 @@ class Kmeans(nn.Module):
             return
         _, h, _, d, device, dtype = *x.shape, x.device, x.dtype
 
-        means = self.means.type(dtype)
-        num_clusters = means.shape[1]
+        num_clusters = self.means.shape[1]
+
         means = x.transpose(0, 1).contiguous().view(h, -1, d)
-        indices = torch.randperm(means.size(1), device=device)[:num_clusters]
+        num_samples = means.shape[1]
+
+        if num_samples >= num_clusters:
+            indices = torch.randperm(num_samples, device=device)[:num_clusters]
+        else:
+            indices = torch.randint(0, num_samples, (num_clusters,), device=device)
+
         means = means[:, indices]
 
         for _ in range(KMEAN_INIT_ITERS):
