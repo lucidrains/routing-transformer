@@ -380,7 +380,7 @@ class KmeansAttention(nn.Module):
         self.kmeans = Kmeans(num_heads, head_dim, num_clusters, ema_decay, commitment)
         self.dropout = nn.Dropout(dropout)
 
-        self.num_mem_kv = max(num_mem_kv, 1 if causal else 0)
+        self.num_mem_kv = max(num_mem_kv, 1 if causal and not shared_qk else 0)
         self.mem_key = nn.Parameter(torch.randn(num_heads, num_clusters, self.num_mem_kv, head_dim))
         self.mem_value = nn.Parameter(torch.randn(num_heads, num_clusters, self.num_mem_kv, head_dim))
 
