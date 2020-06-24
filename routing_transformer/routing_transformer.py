@@ -379,6 +379,9 @@ class KmeansAttention(nn.Module):
         self.kmeans = Kmeans(num_heads, head_dim, num_clusters, ema_decay, commitment)
         self.dropout = nn.Dropout(dropout)
 
+        self.null_key = nn.Parameter(torch.randn(1, head_dim))
+        self.null_value = nn.Parameter(torch.randn(1, head_dim))
+
     def forward(self, q, k, v, query_mask = None, key_mask = None, **kwargs):
         b, h, t, d, kv_t, wsz, c_wsz, nc, device, dtype = *q.shape, k.shape[2], self.window_size, self.context_window_size, self.num_clusters, q.device, q.dtype
         is_reverse = kwargs.pop('_reverse', False)
@@ -406,6 +409,9 @@ class KmeansAttention(nn.Module):
         reshape_with_window = lambda x: x.reshape(b, h, nc, -1, d)
         q, k, v = map(reshape_with_window, (q, k, v))
 
+        n_k, n_v = map(lambda x: x[None, None, None, :, :].expand(b, h, nc, -1, -1).to(q), (self.null_key, self.null_value))
+        k, v = map(lambda x: torch.cat(x, dim=3), ((n_k, k), (n_v, v)))
+
         dots = torch.einsum('bhnid,bhnjd->bhnij', q, k) * (d ** -0.5)
 
         mask_value = max_neg_value(dots)
@@ -418,12 +424,14 @@ class KmeansAttention(nn.Module):
             kv_mask = expand_dim(key_mask, 1, h).gather(2, kv_indices)
             q_mask, kv_mask = map(lambda t: t.reshape(b, h, nc, -1), (q_mask, kv_mask))
             mask = q_mask[:, :, :, :, None] * kv_mask[:, :, :, None, :]
+            mask = F.pad(mask, (1, 0), value=True)
             dots.masked_fill_(~mask, mask_value)
             del mask
 
         if self.causal:
             q_mask, kv_mask = map(lambda t: t.reshape(b, h, nc, -1), (indices, kv_indices))
             mask = q_mask[:, :, :, :, None] < kv_mask[:, :, :, None, :]
+            mask = F.pad(mask, (1, 0), value=False)
             dots.masked_fill_(mask, mask_value)
             del mask            
 
