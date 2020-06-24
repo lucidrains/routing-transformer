@@ -380,8 +380,8 @@ class KmeansAttention(nn.Module):
         self.dropout = nn.Dropout(dropout)
 
         self.num_mem_kv = max(num_mem_kv, 1 if causal else 0)
-        self.null_key = nn.Parameter(torch.randn(num_heads, num_clusters, self.num_mem_kv, head_dim))
-        self.null_value = nn.Parameter(torch.randn(num_heads, num_clusters, self.num_mem_kv, head_dim))
+        self.mem_key = nn.Parameter(torch.randn(num_heads, num_clusters, self.num_mem_kv, head_dim))
+        self.mem_value = nn.Parameter(torch.randn(num_heads, num_clusters, self.num_mem_kv, head_dim))
 
     def forward(self, q, k, v, query_mask = None, key_mask = None, **kwargs):
         b, h, t, d, kv_t, wsz, c_wsz, nc, device, dtype = *q.shape, k.shape[2], self.window_size, self.context_window_size, self.num_clusters, q.device, q.dtype
@@ -410,8 +410,8 @@ class KmeansAttention(nn.Module):
         reshape_with_window = lambda x: x.reshape(b, h, nc, -1, d)
         q, k, v = map(reshape_with_window, (q, k, v))
 
-        n_k, n_v = map(lambda x: expand_dim(x, 0, b).to(q), (self.null_key, self.null_value))
-        k, v = map(lambda x: torch.cat(x, dim=3), ((n_k, k), (n_v, v)))
+        m_k, m_v = map(lambda x: expand_dim(x, 0, b).to(q), (self.mem_key, self.mem_value))
+        k, v = map(lambda x: torch.cat(x, dim=3), ((m_k, k), (m_v, v)))
 
         dots = torch.einsum('bhnid,bhnjd->bhnij', q, k) * (d ** -0.5)
 
