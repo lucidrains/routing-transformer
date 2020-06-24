@@ -569,8 +569,10 @@ class SelfAttention(nn.Module):
         return self.dropout(out), total_loss
 
 class RoutingTransformer(nn.Module):
-    def __init__(self, dim, depth, max_seq_len, heads = 8, window_size = 64, local_attn_window_size = None, causal = False, weight_tie = False, attn_dropout = 0., ff_dropout = 0., attn_layer_dropout = 0., layer_dropout = 0., n_local_attn_heads = 0, ff_glu = False, reversible = False, ff_chunks = 1, kmeans_ema_decay = 0.999, commitment_factor = 1e-4, receives_context = False, context_window_size = None, _register_kmeans_update = False, rel_pos_emb = True, pkm_layers = tuple(), pkm_num_keys = 128, num_mem_kv = 0, shared_qk = False, context_shared_qk = False):
+    def __init__(self, dim, depth, max_seq_len, heads = 8, window_size = 64, local_attn_window_size = None, causal = False, weight_tie = False, attn_dropout = 0., ff_dropout = 0., attn_layer_dropout = 0., layer_dropout = 0., n_local_attn_heads = 0, ff_glu = False, reversible = False, ff_chunks = 1, kmeans_ema_decay = 0.999, commitment_factor = 1e-4, receives_context = False, context_window_size = None, _register_kmeans_update = False, rel_pos_emb = True, pkm_layers = tuple(), pkm_num_keys = 128, num_mem_kv = 0, shared_qk = None, context_shared_qk = False):
         super().__init__()
+        shared_qk = default(shared_qk, causal) # default to shared qk when causal, due to experimental results
+
         local_attn_window_size = default(local_attn_window_size, window_size // 2)
         if type(n_local_attn_heads) is not tuple:
             n_local_attn_heads = tuple([n_local_attn_heads] * depth)
@@ -630,7 +632,7 @@ class RoutingTransformer(nn.Module):
         return x, loss
 
 class RoutingTransformerLM(nn.Module):
-    def __init__(self, num_tokens, dim, depth, max_seq_len, heads = 8, window_size = 64, local_attn_window_size = None, causal = False, emb_dim = None, weight_tie = False, attn_dropout = 0., ff_dropout = 0., attn_layer_dropout = 0., layer_dropout = 0., ff_mult = 4, ff_activation = None, ff_glu = False, return_embeddings = False, n_local_attn_heads = 0, reversible = False, ff_chunks = 1, kmeans_ema_decay = 0.999, commitment_factor = 1e-4, receives_context = False, context_window_size = None, rel_pos_emb = True, _register_kmeans_update = True, pkm_layers = tuple(), pkm_num_keys = 128, num_mem_kv = 0, shared_qk = False, context_shared_qk = False):
+    def __init__(self, num_tokens, dim, depth, max_seq_len, heads = 8, window_size = 64, local_attn_window_size = None, causal = False, emb_dim = None, weight_tie = False, attn_dropout = 0., ff_dropout = 0., attn_layer_dropout = 0., layer_dropout = 0., ff_mult = 4, ff_activation = None, ff_glu = False, return_embeddings = False, n_local_attn_heads = 0, reversible = False, ff_chunks = 1, kmeans_ema_decay = 0.999, commitment_factor = 1e-4, receives_context = False, context_window_size = None, rel_pos_emb = True, _register_kmeans_update = True, pkm_layers = tuple(), pkm_num_keys = 128, num_mem_kv = 0, shared_qk = None, context_shared_qk = False):
         super().__init__()
         assert (max_seq_len % window_size) == 0, 'max sequence length must be divisible by the window size, to calculate number of kmeans cluster'
         emb_dim = default(emb_dim, dim)
