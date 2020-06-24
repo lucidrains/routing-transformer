@@ -42,6 +42,7 @@ model = RoutingTransformerLM(
     ff_glu = True,           # use GLU variant in feedforward
     pkm_layers = (4,7),      # specify layers to use product key memory. paper shows 1 or 2 modules near the middle of the transformer is best
     pkm_num_keys = 128,      # defaults to 128, but can be increased to 256 or 512 as memory allows
+    num_mem_kv = 8           # number of memory key/values to append to each cluster of each head, from the 'All-Attention' paper. defaults to 1 in the causal case for unshared QK to work
 ).cuda()
 
 x = torch.randint(0, 20000, (1, 8192)).long().cuda()
@@ -213,5 +214,20 @@ Special thanks to <a href="https://github.com/AranKomat">Aran Komatsuzaki</a> fo
     year    = {2019},
     eprint  = {1907.05242},
     archivePrefix = {arXiv}
+}
+```
+
+```bibtex
+@article{DBLP:journals/corr/abs-1907-01470,
+    author    = {Sainbayar Sukhbaatar and
+               Edouard Grave and
+               Guillaume Lample and
+               Herv{\'{e}} J{\'{e}}gou and
+               Armand Joulin},
+    title     = {Augmenting Self-attention with Persistent Memory},
+    journal   = {CoRR},
+    volume    = {abs/1907.01470},
+    year      = {2019},
+    url       = {http://arxiv.org/abs/1907.01470}
 }
 ```
