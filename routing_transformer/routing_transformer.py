@@ -127,37 +127,6 @@ class ProjectInOut(nn.Module):
         x = self.project_out(x)
         return x, loss
 
-# positional embeddings
-
-class AbsolutePositionalEmbedding(nn.Module):
-    def __init__(self, dim, max_seq_len):
-        super().__init__()
-        self.emb = nn.Embedding(max_seq_len, dim)
-
-    def forward(self, x):
-        t = torch.arange(x.shape[1], device=x.device)
-        return self.emb(t)
-
-def shift(x):
-    *_, i, j = x.shape
-    zero_pad = torch.zeros((*_, i, i), **to(x))
-    x = torch.cat([x, zero_pad], -1)
-    l = i + j - 1
-    x = x.view(*_, -1)
-    zero_pad = torch.zeros(*_, -x.size(-1) % l, **to(x))
-    shifted = torch.cat([x, zero_pad], -1).view(*_, -1, l)
-    return shifted[..., :i, i - 1:]
-
-class RelativePositionalEmbedding(nn.Module):
-    def __init__(self, dim, heads, length):
-        super().__init__()
-        self.scale = dim ** -0.5
-        self.weights = nn.Parameter(torch.zeros(length, heads, dim))
-
-    def forward(self, q):
-        emb = torch.einsum('bhnid,jhd->bhnij', q, self.weights.type(q.dtype)) * self.scale
-        return shift(emb)
-
 # kmeans related function and class
 
 def update_kmeans_on_backwards(module):
