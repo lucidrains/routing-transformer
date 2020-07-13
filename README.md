@@ -31,6 +31,7 @@ model = RoutingTransformerLM(
     causal = True,           # auto-regressive or not
     emb_dim = 128,           # embedding factorization, from Albert
     weight_tie = False,      # weight tie layers, from Albert
+    dim_head = 64,           # be able to fix the dimension of each head, making it independent of the embedding dimension and the number of heads
     attn_dropout = 0.1,      # dropout after attention
     attn_layer_dropout = 0., # dropout after self attention layer
     ff_dropout = 0.1,        # feedforward dropout
@@ -229,5 +230,14 @@ Special thanks to <a href="https://github.com/AranKomat">Aran Komatsuzaki</a> fo
     volume    = {abs/1907.01470},
     year      = {2019},
     url       = {http://arxiv.org/abs/1907.01470}
+}
+```
+
+```bibtex
+@misc{bhojanapalli2020lowrank,
+    title   = {Low-Rank Bottleneck in Multi-head Attention Models},
+    author  = {Srinadh Bhojanapalli and Chulhee Yun and Ankit Singh Rawat and Sashank J. Reddi and Sanjiv Kumar},
+    year    = {2020},
+    eprint  = {2002.07028}
 }
 ```
