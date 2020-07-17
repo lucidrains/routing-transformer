@@ -43,6 +43,9 @@ model = RoutingTransformerLM(
     ff_glu = True,           # use GLU variant in feedforward
     pkm_layers = (4,7),      # specify layers to use product key memory. paper shows 1 or 2 modules near the middle of the transformer is best
     pkm_num_keys = 128,      # defaults to 128, but can be increased to 256 or 512 as memory allows
+    moe_layers = (3, 6),     # specify which layers to use mixture of experts
+    moe_num_experts = 4,     # number of experts in the mixture of experts layer, defaults to 4. increase for adding more parameters to model
+    moe_loss_coef = 1e-2,    # the weight for the auxiliary loss in mixture of experts to keep expert usage balanced
     num_mem_kv = 8           # number of memory key/values to append to each cluster of each head, from the 'All-Attention' paper. defaults to 1 in the causal case for unshared QK to work
 ).cuda()
 
