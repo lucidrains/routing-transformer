@@ -67,6 +67,8 @@ class RoutingTransformerEncDec(nn.Module):
         self.enc = enc
         self.dec = AutoregressiveWrapper(dec, ignore_index = ignore_index, pad_value = pad_value)
 
+        # there is an outstanding bug where the network breaks when the decoder is reversible and the encoder auxiliary loss is added to the total loss
+        self.dec_reversible = dec_kwargs.pop('reversible', False)
         update_kmeans_on_backwards(self)
 
     @torch.no_grad()
@@ -78,5 +80,8 @@ class RoutingTransformerEncDec(nn.Module):
 
     def forward(self, seq_in, seq_out, return_loss = False, randomly_truncate_sequence = False, **kwargs):
         enc_kwargs, dec_kwargs, kwargs = extract_and_set_enc_dec_kwargs(kwargs)
-        context, _ = self.enc(seq_in, **enc_kwargs)
-        return self.dec(seq_out, return_loss = return_loss, randomly_truncate_sequence = randomly_truncate_sequence, context = context, **dec_kwargs)
+        context, enc_aux_loss = self.enc(seq_in, **enc_kwargs)
+        loss = self.dec(seq_out, return_loss = return_loss, randomly_truncate_sequence = randomly_truncate_sequence, context = context, **dec_kwargs)
+        if not self.dec_reversible:
+            loss = loss + enc_aux_loss
+        return loss
