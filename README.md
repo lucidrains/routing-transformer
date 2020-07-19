@@ -98,6 +98,7 @@ model = RoutingTransformerEncDec(
     dec_heads = 8,
     dec_max_seq_len = 4096,
     dec_window_size = 128,
+    dec_reversible = True
 ).cuda()
 
 src = torch.randint(0, 20000, (1, 4096)).cuda()
@@ -105,8 +106,9 @@ tgt = torch.randint(0, 20000, (1, 4096)).cuda()
 src_mask = torch.ones_like(src).bool().cuda()
 tgt_mask = torch.ones_like(tgt).bool().cuda()
 
-loss = model(src, tgt, enc_input_mask = src_mask, dec_input_mask = tgt_mask, return_loss = True, randomly_truncate_sequence = True)
+loss, aux_loss = model(src, tgt, enc_input_mask = src_mask, dec_input_mask = tgt_mask, return_loss = True, randomly_truncate_sequence = True)
 loss.backward()
+aux_loss.backward()
 
 # do your training, then to sample up to 2048 tokens based on the source sequence
 src = torch.randint(0, 20000, (1, 4096)).cuda()

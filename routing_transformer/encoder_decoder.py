@@ -67,8 +67,14 @@ class RoutingTransformerEncDec(nn.Module):
         self.enc = enc
         self.dec = AutoregressiveWrapper(dec, ignore_index = ignore_index, pad_value = pad_value)
 
-        # there is an outstanding bug where the network breaks when the decoder is reversible and the encoder auxiliary loss is added to the total loss
+        # user will have to manually call backwards on encoder auxiliary loss if the decoder reversibility is turned on
+        # should place a bug bounty on this
         self.dec_reversible = dec_kwargs.pop('reversible', False)
+
+        # display a warning message
+        if self.dec_reversible:
+            print('Warning! Due to an issue with reversible nets and encoder auxiliary losses, you must explicitly call backwards on the encoder auxiliary loss, which is supplied as the second element of the returned tuple on forward')
+
         update_kmeans_on_backwards(self)
 
     @torch.no_grad()
@@ -81,7 +87,12 @@ class RoutingTransformerEncDec(nn.Module):
     def forward(self, seq_in, seq_out, return_loss = False, randomly_truncate_sequence = False, **kwargs):
         enc_kwargs, dec_kwargs, kwargs = extract_and_set_enc_dec_kwargs(kwargs)
         context, enc_aux_loss = self.enc(seq_in, **enc_kwargs)
-        loss = self.dec(seq_out, return_loss = return_loss, randomly_truncate_sequence = randomly_truncate_sequence, context = context, **dec_kwargs)
-        if not self.dec_reversible:
-            loss = loss + enc_aux_loss
-        return loss
+        loss = self.dec(seq_out, return_loss = return_loss, randomly_truncate_sequence = randomly_truncate_sequence, context = context, aux_loss = enc_aux_loss, **dec_kwargs)
+
+        # if decoder reversibility turned on, user must manually call backward on encoder auxiliary losses
+        if self.dec_reversible:
+            return loss, enc_aux_loss
+
+        aux_loss = torch.tensor(0., requires_grad = True)
+        loss = loss + enc_aux_loss
+        return loss, aux_loss
