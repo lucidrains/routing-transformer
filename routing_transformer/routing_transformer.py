@@ -53,6 +53,9 @@ def is_empty(t):
 def max_neg_value(tensor):
     return -torch.finfo(tensor.dtype).max
 
+def norm(t):
+    return F.normalize(t, p = 2, dim = -1)
+
 def batched_index_select(values, indices):
     last_dim = values.shape[-1]
     return values.gather(2, expand_dim(indices, -1, last_dim))
@@ -164,7 +167,7 @@ def kmeans_iter(x, means, buckets = None):
 
     means_ = buckets.new_zeros(b, h, num_clusters, d, dtype=dtype)
     means_.scatter_add_(-2, expand_dim(buckets, -1, d), x)
-    means_ = F.normalize(means_.sum(0, keepdim=True), dim=-1).type(dtype)
+    means_ = norm(means_.sum(0, keepdim=True)).type(dtype)
 
     means = torch.where(zero_mask.unsqueeze(-1), means, means_)
     means = means.squeeze(0)
@@ -226,7 +229,7 @@ class Kmeans(nn.Module):
 
         b, dtype = x.shape[0], x.dtype
         means = self.means.type(dtype)
-        x = F.normalize(x, 2, dim=-1).type(dtype)
+        x = norm(x).type(dtype)
 
         with torch.no_grad():
             dists, buckets = dists_and_buckets(x, means)
@@ -279,15 +282,17 @@ class KmeansAttention(nn.Module):
         kv_wsz = min(kv_wsz, kv_t)
 
         if not self.shared_qk or self.receives_context:
+            q, k = map(norm, (q, k))
             dists, aux_loss = self.kmeans(torch.cat((q, k), dim=2), update_kmeans)
             q_dists, k_dists = split_at_index(2, t, dists)
             indices = distribution(q_dists, wsz)
             kv_indices = distribution(k_dists, kv_wsz)
         else:
+            q = norm(q)
             dists, aux_loss = self.kmeans(q, update_kmeans)
-            k = F.normalize(k, dim=-1).to(q)
             indices = distribution(dists, wsz)
             kv_indices = indices
+            k = q
 
         q = batched_index_select(q, indices)
         k = batched_index_select(k, kv_indices)
