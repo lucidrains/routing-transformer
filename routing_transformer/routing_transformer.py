@@ -54,7 +54,7 @@ def max_neg_value(tensor):
     return -torch.finfo(tensor.dtype).max
 
 def norm(t):
-    return F.normalize(t, p = 2, dim = -1)
+    return F.normalize(t, p = 2, dim = -1).to(t)
 
 def batched_index_select(values, indices):
     last_dim = values.shape[-1]
