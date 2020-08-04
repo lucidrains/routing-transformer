@@ -80,6 +80,13 @@ def split_at_index(dim, index, t):
     r = (*pre_slices, slice(index, None))
     return t[l], t[r]
 
+def reshape_dim(t, dim, split_dims):
+    shape = list(t.shape)
+    num_dims = len(shape)
+    dim = (dim + num_dims) % num_dims
+    shape[dim:dim+1] = split_dims
+    return t.reshape(shape)
+
 def ema(old, new, decay):
     if old is None:
         return new
@@ -396,42 +403,55 @@ class SelfAttention(nn.Module):
 
         num_clusters = max_seq_len // window_size
 
+        # local
+
+        local_dim_heads = dim_head * self.local_attn_heads
+
         if self.local_attn_heads > 0:
             rel_pos_emb_config = (dim_head, local_attn_heads) if rel_pos_emb else None
-            self.local_attn = LocalAttention(local_attn_window_size, causal = True, dropout = attn_dropout, rel_pos_emb_config = rel_pos_emb_config, shared_qk = shared_qk)
+            self.local_attn = LocalAttention(local_attn_window_size, causal = True, dropout = attn_dropout, rel_pos_emb_config = rel_pos_emb_config)
+            self.local_to_qkv = nn.Linear(dim, 3 * local_dim_heads)
+
+        # global
+
+        global_dim_heads = dim_head * self.global_attn_heads
 
         if self.global_attn_heads > 0:
             self.global_attn = KmeansAttention(num_clusters, window_size, self.global_attn_heads, dim_head, causal = causal, dropout = attn_dropout, ema_decay = kmeans_ema_decay, commitment = commitment_factor, receives_context = receives_context, num_mem_kv = num_mem_kv, shared_qk = shared_qk)
 
-        self.to_q = nn.Linear(dim, dim_heads, bias = False)
-        self.to_v = nn.Linear(dim, dim_heads, bias = False)
-        self.to_out = nn.Linear(dim_heads, dim, bias = False)
+        self.to_q = nn.Linear(dim, global_dim_heads, bias = False)
+        self.to_v = nn.Linear(dim, global_dim_heads, bias = False)
 
         if not self.shared_qk:
-            self.to_k = nn.Linear(dim, dim_heads, bias = False)
+            self.to_k = nn.Linear(dim, global_dim_heads, bias = False)
 
+        # out
+
+        self.to_out = nn.Linear(dim_heads, dim, bias = False)
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, x, context = None, input_mask = None, context_mask = None, **kwargs):
         assert not (self.receives_context and context is None), 'context must be passed if self attention is set to receive context'
         b, t, e, h, dh = *x.shape, self.heads, self.dim_head
+        has_local, has_global = map(lambda x: x > 0, (self.local_attn_heads, self.global_attn_heads))
 
-        split_heads = lambda v: v.reshape(b, -1, h, dh).transpose(1, 2).contiguous()
+        split_heads = lambda v: reshape_dim(v, -1, (-1, dh)).transpose(1, 2).contiguous()
 
-        kv_input = x if not self.receives_context else context
+        if has_local:
+            local_qkv = self.local_to_qkv(x).chunk(3, dim=-1)
+            lq, lk, lv = map(split_heads, local_qkv)
 
-        q, v = self.to_q(x), self.to_v(kv_input)
+        if has_global:
+            kv_input = x if not self.receives_context else context
 
-        if not self.shared_qk:
-            k = self.to_k(kv_input)
-        else:
-            k = self.to_q(kv_input) if self.receives_context else q
+            q, v = self.to_q(x), self.to_v(kv_input)
 
-        q, k, v = map(split_heads, (q, k, v))
+            if not self.shared_qk:
+                k = self.to_k(kv_input)
+            else:
+                k = self.to_q(kv_input) if self.receives_context else q
 
-        split_index_fn = partial(split_at_index, 1, self.local_attn_heads)
-        (lq, q), (lk, k), (lv, v) = map(split_index_fn, (q, k, v))
-        has_local, has_global = map(lambda x: x.shape[1] > 0, (lq, q))
+            q, k, v = map(split_heads, (q, k, v))
 
         out = []
         total_loss = torch.tensor(0., requires_grad=True, **to(x))
