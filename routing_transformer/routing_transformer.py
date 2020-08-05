@@ -380,7 +380,7 @@ class FeedForward(nn.Module):
 class SelfAttention(nn.Module):
     def __init__(self,  dim, depth, max_seq_len, heads, local_attn_heads, window_size, dim_head = None, local_attn_window_size = None, causal = False, attn_dropout = 0., dropout = 0., kmeans_ema_decay = 0.999, commitment_factor = 1e-4, receives_context = False, context_window_size = None, rel_pos_emb = True, num_mem_kv = 0, shared_qk = False):
         super().__init__()
-        assert (dim % heads) == 0, 'hidden dimension must be divisible by number of heads'
+        assert dim_head or (dim % heads) == 0, 'hidden dimension must be divisible by number of heads'
         assert (max_seq_len % window_size) == 0, 'maximum sequence length must be divisible by the target window size'
         assert local_attn_heads <= heads, 'number of local attention heads must be less than total heads'
         assert not (receives_context and local_attn_heads > 0), 'local attention cannot be used for self attention with context'
