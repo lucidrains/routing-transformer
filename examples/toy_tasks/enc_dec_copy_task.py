@@ -51,7 +51,7 @@ for i in tqdm.tqdm(range(NUM_BATCHES), mininterval=10., desc='training'):
     model.train()
 
     src, tgt, src_mask, tgt_mask = next(cycle())
-    loss = model(src, tgt, enc_input_mask=src_mask, dec_input_mask=tgt_mask, return_loss = True, randomly_truncate_sequence = True)
+    loss, _ = model(src, tgt, enc_input_mask=src_mask, dec_input_mask=tgt_mask, return_loss = True, randomly_truncate_sequence = True)
     loss.backward()
 
     torch.nn.utils.clip_grad_norm_(model.parameters(), 0.5)

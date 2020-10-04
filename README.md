@@ -31,6 +31,7 @@ model = RoutingTransformerLM(
     causal = True,           # auto-regressive or not
     emb_dim = 128,           # embedding factorization, from Albert
     weight_tie = False,      # weight tie layers, from Albert
+    dim_head = 64,           # be able to fix the dimension of each head, making it independent of the embedding dimension and the number of heads
     attn_dropout = 0.1,      # dropout after attention
     attn_layer_dropout = 0., # dropout after self attention layer
     ff_dropout = 0.1,        # feedforward dropout
@@ -40,6 +41,12 @@ model = RoutingTransformerLM(
     reversible = True,       # reversible networks for memory savings, from Reformer paper
     ff_chunks = 10,          # feed forward chunking, from Reformer paper
     ff_glu = True,           # use GLU variant in feedforward
+    pkm_layers = (4, 7),     # specify layers to use product key memory. paper shows 1 or 2 modules near the middle of the transformer is best
+    pkm_num_keys = 128,      # defaults to 128, but can be increased to 256 or 512 as memory allows
+    moe_layers = (3, 6),     # specify which layers to use mixture of experts
+    moe_num_experts = 4,     # number of experts in the mixture of experts layer, defaults to 4. increase for adding more parameters to model
+    moe_loss_coef = 1e-2,    # the weight for the auxiliary loss in mixture of experts to keep expert usage balanced
+    num_mem_kv = 8           # number of memory key/values to append to each cluster of each head, from the 'All-Attention' paper. defaults to 1 in the causal case for unshared QK to work
 ).cuda()
 
 x = torch.randint(0, 20000, (1, 8192)).long().cuda()
@@ -91,6 +98,7 @@ model = RoutingTransformerEncDec(
     dec_heads = 8,
     dec_max_seq_len = 4096,
     dec_window_size = 128,
+    dec_reversible = True
 ).cuda()
 
 src = torch.randint(0, 20000, (1, 4096)).cuda()
@@ -98,8 +106,9 @@ tgt = torch.randint(0, 20000, (1, 4096)).cuda()
 src_mask = torch.ones_like(src).bool().cuda()
 tgt_mask = torch.ones_like(tgt).bool().cuda()
 
-loss = model(src, tgt, enc_input_mask = src_mask, dec_input_mask = tgt_mask, return_loss = True, randomly_truncate_sequence = True)
+loss, aux_loss = model(src, tgt, enc_input_mask = src_mask, dec_input_mask = tgt_mask, return_loss = True, randomly_truncate_sequence = True)
 loss.backward()
+aux_loss.backward()
 
 # do your training, then to sample up to 2048 tokens based on the source sequence
 src = torch.randint(0, 20000, (1, 4096)).cuda()
@@ -107,6 +116,12 @@ start_tokens = torch.ones(1, 1).long().cuda() # assume starting token is 1
 
 sample = model.generate(src, start_tokens, seq_len = 2048, eos_token = 2) # (1, <= 2048, 20000)
 ```
+
+## Product Key Memory
+
+To see the benefits of using PKM, the learning rate of the values must be set higher than the rest of the parameters. (Recommended to be `1e-2`)
+
+You can follow the instructions here to set it correctly https://github.com/lucidrains/product-key-memory#learning-rates
 
 ## Kmeans Hyperparameters
 
@@ -195,5 +210,39 @@ Special thanks to <a href="https://github.com/AranKomat">Aran Komatsuzaki</a> fo
     author      = {Zhenzhong Lan and Mingda Chen and Sebastian Goodman and Kevin Gimpel and Piyush Sharma and Radu Soricut},
     year        = {2019},
     url         = {https://arxiv.org/abs/1909.11942}
+}
+```
+
+```bibtex
+@misc{lample2019large,
+    title   = {Large Memory Layers with Product Keys},
+    author  = {Guillaume Lample and Alexandre Sablayrolles and Marc'Aurelio Ranzato and Ludovic Denoyer and Hervé Jégou},
+    year    = {2019},
+    eprint  = {1907.05242},
+    archivePrefix = {arXiv}
+}
+```
+
+```bibtex
+@article{DBLP:journals/corr/abs-1907-01470,
+    author    = {Sainbayar Sukhbaatar and
+               Edouard Grave and
+               Guillaume Lample and
+               Herv{\'{e}} J{\'{e}}gou and
+               Armand Joulin},
+    title     = {Augmenting Self-attention with Persistent Memory},
+    journal   = {CoRR},
+    volume    = {abs/1907.01470},
+    year      = {2019},
+    url       = {http://arxiv.org/abs/1907.01470}
+}
+```
+
+```bibtex
+@misc{bhojanapalli2020lowrank,
+    title   = {Low-Rank Bottleneck in Multi-head Attention Models},
+    author  = {Srinadh Bhojanapalli and Chulhee Yun and Ankit Singh Rawat and Sashank J. Reddi and Sanjiv Kumar},
+    year    = {2020},
+    eprint  = {2002.07028}
 }
 ```
