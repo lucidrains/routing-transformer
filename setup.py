@@ -14,7 +14,7 @@ setup(
       'torch',
       'local-attention',
       'product-key-memory',
-      'mixture-of-experts',
+      'mixture-of-experts>=0.2.0',
       'axial-positional-embedding>=0.1.0'
   ],
   classifiers=[
