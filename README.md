@@ -46,7 +46,9 @@ model = RoutingTransformerLM(
     moe_layers = (3, 6),     # specify which layers to use mixture of experts
     moe_num_experts = 4,     # number of experts in the mixture of experts layer, defaults to 4. increase for adding more parameters to model
     moe_loss_coef = 1e-2,    # the weight for the auxiliary loss in mixture of experts to keep expert usage balanced
-    num_mem_kv = 8           # number of memory key/values to append to each cluster of each head, from the 'All-Attention' paper. defaults to 1 in the causal case for unshared QK to work
+    num_mem_kv = 8,          # number of memory key/values to append to each cluster of each head, from the 'All-Attention' paper. defaults to 1 in the causal case for unshared QK to work
+    use_scale_norm = False,  # use scale norm, simplified normalization from 'Transformers without Tears' paper
+    use_rezero = False       # use Rezero with no normalization
 ).cuda()
 
 x = torch.randint(0, 20000, (1, 8192)).long().cuda()
