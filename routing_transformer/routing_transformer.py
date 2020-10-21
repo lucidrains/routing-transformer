@@ -144,7 +144,6 @@ class ScaleNorm(nn.Module):
         self.eps = eps
 
     def forward(self, x):
-        print(x)
         def norm(t):
             n = torch.norm(t, dim=-1, keepdim=True).clamp(min=self.eps)
             return t / n * self.g
