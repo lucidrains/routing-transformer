@@ -248,3 +248,22 @@ Special thanks to <a href="https://github.com/AranKomat">Aran Komatsuzaki</a> fo
     eprint  = {2002.07028}
 }
 ```
+
+```bibtex
+@article{1910.05895,
+    author  = {Toan Q. Nguyen and Julian Salazar},
+    title   = {Transformers without Tears: Improving the Normalization of Self-Attention},
+    year    = {2019},
+    eprint  = {arXiv:1910.05895},
+    doi     = {10.5281/zenodo.3525484},
+}
+```
+
+```bibtex
+@misc{bachlechner2020rezero,
+    title   = {ReZero is All You Need: Fast Convergence at Large Depth},
+    author  = {Thomas Bachlechner and Bodhisattwa Prasad Majumder and Huanru Henry Mao and Garrison W. Cottrell and Julian McAuley},
+    year    = {2020},
+    url     = {https://arxiv.org/abs/2003.04887}
+}
+```
