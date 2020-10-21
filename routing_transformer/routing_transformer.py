@@ -100,6 +100,11 @@ def ema_inplace(moving_avg, new, decay):
 
 # helper classes
 
+def map_first_tuple_or_el(x, fn):
+    if isinstance(x, tuple):
+        return (fn(x[0]),) + x[1:]
+    return fn(x)
+
 class Chunk(nn.Module):
     def __init__(self, chunks, fn, along_dim = -1):
         super().__init__()
@@ -130,12 +135,7 @@ class ReZero(nn.Module):
 
     def forward(self, x, **kwargs):
         x = self.fn(x, **kwargs)
-        if type(x) == tuple:
-            y = x[0] * self.residual_weight
-            return (y, ) + x[1:]
-        else:
-            return x * self.residual_weight
-
+        return map_first_tuple_or_el(x, lambda t: t * self.residual_weight)
 
 class ScaleNorm(nn.Module):
     def __init__(self, dim, eps=1e-5):
@@ -144,14 +144,11 @@ class ScaleNorm(nn.Module):
         self.eps = eps
 
     def forward(self, x):
-        if type(x) == tuple:
-            n = torch.norm(x[0], dim=-1, keepdim=True).clamp(min=self.eps)
-            y = x[0] / n * self.g
-            return (y, ) + x[1:]
-        else:
-            n = torch.norm(x, dim=-1, keepdim=True).clamp(min=self.eps)
-            return x / n * self.g
-
+        print(x)
+        def norm(t):
+            n = torch.norm(t, dim=-1, keepdim=True).clamp(min=self.eps)
+            return t / n * self.g
+        return map_first_tuple_or_el(x, norm)
 
 class ProjectInOut(nn.Module):
     def __init__(self, fn, dim_in, dim_out, project_out = True):
@@ -503,7 +500,7 @@ class SelfAttention(nn.Module):
         return self.dropout(out), total_loss
 
 class RoutingTransformer(nn.Module):
-    def __init__(self, dim, depth, max_seq_len, heads = 8, dim_head = None, window_size = 64, local_attn_window_size = None, causal = False, weight_tie = False, attn_dropout = 0., ff_dropout = 0., attn_layer_dropout = 0., layer_dropout = 0., n_local_attn_heads = 0, ff_glu = False, reversible = False, ff_chunks = 1, kmeans_ema_decay = 0.999, commitment_factor = 1e-4, receives_context = False, context_window_size = None, _register_kmeans_update = False, rel_pos_emb = True, pkm_layers = tuple(), pkm_num_keys = 128, moe_layers = tuple(), moe_num_experts = 4, moe_loss_coef = 1e-2, num_mem_kv = 0, shared_qk = None, context_shared_qk = False, use_rezero = False, use_scale_norm = False):
+    def __init__(self, dim, depth, max_seq_len, heads = 8, dim_head = None, window_size = 64, local_attn_window_size = None, causal = False, weight_tie = False, attn_dropout = 0., ff_dropout = 0., attn_layer_dropout = 0., layer_dropout = 0., n_local_attn_heads = 0, ff_glu = False, reversible = False, ff_chunks = 1, kmeans_ema_decay = 0.999, commitment_factor = 1e-4, receives_context = False, context_window_size = None, _register_kmeans_update = False, rel_pos_emb = True, pkm_layers = tuple(), pkm_num_keys = 128, moe_layers = tuple(), moe_num_experts = 4, moe_loss_coef = 1e-2, num_mem_kv = 0, shared_qk = None, context_shared_qk = False, use_rezero = False, use_scale_norm = False, ff_activation = None):
         super().__init__()
         shared_qk = default(shared_qk, causal) # default to shared qk when causal, due to experimental results
 
@@ -581,7 +578,7 @@ class RoutingTransformerLM(nn.Module):
 
         self.token_emb = nn.Embedding(num_tokens, emb_dim)
         self.axial_pos_emb = AxialPositionalEmbedding(emb_dim, axial_shape=(max_seq_len // window_size, window_size))
-        self.routing_transformer = RoutingTransformer(dim, depth, max_seq_len, heads = heads, dim_head = dim_head, window_size = window_size, local_attn_window_size = local_attn_window_size, causal = causal, weight_tie = weight_tie, ff_dropout = ff_dropout, attn_dropout = attn_dropout, attn_layer_dropout = attn_layer_dropout, layer_dropout = layer_dropout, n_local_attn_heads = n_local_attn_heads, ff_glu = ff_glu, reversible = reversible, ff_chunks = ff_chunks, kmeans_ema_decay = kmeans_ema_decay, receives_context = receives_context, context_window_size = context_window_size, rel_pos_emb = rel_pos_emb, pkm_layers = pkm_layers, pkm_num_keys = pkm_num_keys,  moe_layers = moe_layers, moe_num_experts = moe_num_experts, moe_loss_coef = moe_loss_coef, num_mem_kv = num_mem_kv, shared_qk = shared_qk, context_shared_qk = context_shared_qk, _register_kmeans_update = _register_kmeans_update, use_rezero = False, use_scale_norm = False, ff_activation = ff_activation)
+        self.routing_transformer = RoutingTransformer(dim, depth, max_seq_len, heads = heads, dim_head = dim_head, window_size = window_size, local_attn_window_size = local_attn_window_size, causal = causal, weight_tie = weight_tie, ff_dropout = ff_dropout, attn_dropout = attn_dropout, attn_layer_dropout = attn_layer_dropout, layer_dropout = layer_dropout, n_local_attn_heads = n_local_attn_heads, ff_glu = ff_glu, reversible = reversible, ff_chunks = ff_chunks, kmeans_ema_decay = kmeans_ema_decay, receives_context = receives_context, context_window_size = context_window_size, rel_pos_emb = rel_pos_emb, pkm_layers = pkm_layers, pkm_num_keys = pkm_num_keys,  moe_layers = moe_layers, moe_num_experts = moe_num_experts, moe_loss_coef = moe_loss_coef, num_mem_kv = num_mem_kv, shared_qk = shared_qk, context_shared_qk = context_shared_qk, _register_kmeans_update = _register_kmeans_update, use_rezero = use_rezero, use_scale_norm = use_scale_norm, ff_activation = ff_activation)
 
         if emb_dim != dim:
             self.routing_transformer = ProjectInOut(self.routing_transformer, emb_dim, dim, project_out = not return_embeddings)
