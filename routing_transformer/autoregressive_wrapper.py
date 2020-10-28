@@ -47,6 +47,10 @@ class AutoregressiveWrapper(nn.Module):
 
         self.net = Autopadder(net)
         self.max_seq_len = net.max_seq_len
+        self.base_net = net
+
+    def update_kmeans(self):
+        self.base_net.update_kmeans()
 
     @torch.no_grad()
     def generate(self, start_tokens, seq_len, eos_token = None, temperature = 1., filter_logits_fn = top_k, filter_thres = 0.9, **kwargs):

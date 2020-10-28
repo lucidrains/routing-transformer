@@ -154,10 +154,10 @@ model = RoutingTransformerLM(
     _register_kmeans_update = False # set to False to disable auto-updating
 )
 
-wrapper = AutoregressiveWrapper(model)
+model = AutoregressiveWrapper(model)
 
 x = torch.randint(0, 20000, (1, 8192))
-loss = wrapper(x, return_loss = True)
+loss = model(x, return_loss = True)
 loss.backward()
 
 # update kmeans with this call
