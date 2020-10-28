@@ -584,6 +584,10 @@ class RoutingTransformerLM(nn.Module):
 
         self.out = nn.Linear(emb_dim, num_tokens) if not return_embeddings else identity
 
+    def update_kmeans(self):
+        for m in find_modules(self, Kmeans):
+            m.update()
+
     def forward(self, x, **kwargs):
         x = self.token_emb(x)
         x = x + self.axial_pos_emb(x)

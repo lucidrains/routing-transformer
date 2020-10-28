@@ -135,6 +135,35 @@ This is the exponential moving average decay for updating the k-means. The lower
 
 The weight of the auxiliary loss that encourages tokens to get closer (commit) to the k-mean centroids that were chosen for them.
 
+## Updating kmeans manually
+
+The following instructions will allow you to update the kmeans manually. By default the kmeans are updated automatically on every backward pass.
+
+```python
+import torch
+from routing_transformer import RoutingTransformerLM, AutoregressiveWrapper
+
+model = RoutingTransformerLM(
+    num_tokens = 20000,
+    dim = 1024,
+    heads = 8,
+    depth = 6,
+    window_size = 256,
+    max_seq_len = 8192,
+    causal = True,
+    _register_kmeans_update = False # set to False to disable auto-updating
+)
+
+wrapper = AutoregressiveWrapper(model)
+
+x = torch.randint(0, 20000, (1, 8192))
+loss = wrapper(x, return_loss = True)
+loss.backward()
+
+# update kmeans with this call
+model.update_kmeans()
+```
+
 ## Issues
 
 This architecture has trouble generalizing to shorter sequence lengths when decoding tokens from 1 -> maximum sequence length. The simplest and surest solution is to randomly truncate the sequence during training. This helps the network and the kmeans generalize to variable number of tokens, at the cost of prolonged training.
