@@ -31,6 +31,7 @@ model = RoutingTransformerLM(
     causal = True,           # auto-regressive or not
     emb_dim = 128,           # embedding factorization, from Albert
     weight_tie = False,      # weight tie layers, from Albert
+    tie_embedding = False,   # multiply final embeddings with token weights for logits
     dim_head = 64,           # be able to fix the dimension of each head, making it independent of the embedding dimension and the number of heads
     attn_dropout = 0.1,      # dropout after attention
     attn_layer_dropout = 0., # dropout after self attention layer

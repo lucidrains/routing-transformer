@@ -162,6 +162,18 @@ class ProjectInOut(nn.Module):
         x = self.project_out(x)
         return x, loss
 
+class MatrixMultiply(nn.Module):
+    def __init__(self, tensor, transpose = False):
+        super().__init__()
+        self.tensor = tensor
+        self.transpose = transpose
+
+    def forward(self, x):
+        tensor = self.tensor
+        if self.transpose:
+            tensor = tensor.t()
+        return x @ tensor
+
 # kmeans related function and class
 
 def update_kmeans_on_backwards(module):
@@ -569,13 +581,15 @@ class RoutingTransformer(nn.Module):
         return x, loss
 
 class RoutingTransformerLM(nn.Module):
-    def __init__(self, num_tokens, dim, depth, max_seq_len, heads = 8, dim_head = None, window_size = 64, local_attn_window_size = None, causal = False, emb_dim = None, weight_tie = False, attn_dropout = 0., ff_dropout = 0., attn_layer_dropout = 0., layer_dropout = 0., ff_mult = 4, ff_activation = None, ff_glu = False, return_embeddings = False, n_local_attn_heads = 0, reversible = False, ff_chunks = 1, kmeans_ema_decay = 0.999, commitment_factor = 1e-4, receives_context = False, context_window_size = None, rel_pos_emb = True, _register_kmeans_update = True, pkm_layers = tuple(), pkm_num_keys = 128, moe_layers = tuple(), moe_num_experts = 4, moe_loss_coef = 1e-2, num_mem_kv = 0, shared_qk = None, context_shared_qk = False, use_rezero = False, use_scale_norm = False):
+    def __init__(self, num_tokens, dim, depth, max_seq_len, heads = 8, dim_head = None, window_size = 64, local_attn_window_size = None, causal = False, emb_dim = None, weight_tie = False, attn_dropout = 0., ff_dropout = 0., attn_layer_dropout = 0., layer_dropout = 0., ff_mult = 4, ff_activation = None, ff_glu = False, return_embeddings = False, n_local_attn_heads = 0, reversible = False, ff_chunks = 1, kmeans_ema_decay = 0.999, commitment_factor = 1e-4, receives_context = False, context_window_size = None, rel_pos_emb = True, _register_kmeans_update = True, pkm_layers = tuple(), pkm_num_keys = 128, moe_layers = tuple(), moe_num_experts = 4, moe_loss_coef = 1e-2, num_mem_kv = 0, shared_qk = None, context_shared_qk = False, use_rezero = False, use_scale_norm = False, tie_embedding = False):
         super().__init__()
         assert (max_seq_len % window_size) == 0, 'max sequence length must be divisible by the window size, to calculate number of kmeans cluster'
         emb_dim = default(emb_dim, dim)
         self.max_seq_len = max_seq_len
 
         self.token_emb = nn.Embedding(num_tokens, emb_dim)
+        nn.init.normal_(self.token_emb.weight, std = 0.02)
+
         self.axial_pos_emb = AxialPositionalEmbedding(emb_dim, axial_shape=(max_seq_len // window_size, window_size))
         self.routing_transformer = RoutingTransformer(dim, depth, max_seq_len, heads = heads, dim_head = dim_head, window_size = window_size, local_attn_window_size = local_attn_window_size, causal = causal, weight_tie = weight_tie, ff_dropout = ff_dropout, attn_dropout = attn_dropout, attn_layer_dropout = attn_layer_dropout, layer_dropout = layer_dropout, n_local_attn_heads = n_local_attn_heads, ff_glu = ff_glu, reversible = reversible, ff_chunks = ff_chunks, kmeans_ema_decay = kmeans_ema_decay, receives_context = receives_context, context_window_size = context_window_size, rel_pos_emb = rel_pos_emb, pkm_layers = pkm_layers, pkm_num_keys = pkm_num_keys,  moe_layers = moe_layers, moe_num_experts = moe_num_experts, moe_loss_coef = moe_loss_coef, num_mem_kv = num_mem_kv, shared_qk = shared_qk, context_shared_qk = context_shared_qk, _register_kmeans_update = _register_kmeans_update, use_rezero = use_rezero, use_scale_norm = use_scale_norm, ff_activation = ff_activation)
 
@@ -583,7 +597,13 @@ class RoutingTransformerLM(nn.Module):
             self.routing_transformer = ProjectInOut(self.routing_transformer, emb_dim, dim, project_out = not return_embeddings)
 
         self.norm = nn.LayerNorm(dim)
-        self.out = nn.Linear(emb_dim, num_tokens) if not return_embeddings else identity
+
+        if return_embeddings:
+            self.out = nn.Identity()
+        elif tie_embedding:
+            self.out = MatrixMultiply(self.token_emb.weight, transpose = True)
+        else:
+            self.out = nn.Linear(emb_dim, num_tokens)
 
     def update_kmeans(self):
         for m in find_modules(self, Kmeans):
