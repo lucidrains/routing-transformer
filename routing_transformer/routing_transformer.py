@@ -582,6 +582,7 @@ class RoutingTransformerLM(nn.Module):
         if emb_dim != dim:
             self.routing_transformer = ProjectInOut(self.routing_transformer, emb_dim, dim, project_out = not return_embeddings)
 
+        self.norm = nn.LayerNorm(dim)
         self.out = nn.Linear(emb_dim, num_tokens) if not return_embeddings else identity
 
     def update_kmeans(self):
@@ -592,4 +593,5 @@ class RoutingTransformerLM(nn.Module):
         x = self.token_emb(x)
         x = x + self.axial_pos_emb(x)
         x, loss = self.routing_transformer(x, **kwargs)
+        x = self.norm(x)
         return self.out(x), loss
