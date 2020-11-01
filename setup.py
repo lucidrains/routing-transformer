@@ -3,7 +3,7 @@ from setuptools import setup, find_packages
 setup(
   name = 'routing_transformer',
   packages = find_packages(exclude=['examples']),
-  version = '1.2.2',
+  version = '1.3.0',
   license='MIT',
   description = 'Routing Transformer (Pytorch)',
   author = 'Phil Wang, Aran Komatsuzaki',
@@ -12,7 +12,7 @@ setup(
   keywords = ['transformers', 'attention', 'artificial intelligence'],
   install_requires=[
       'torch',
-      'local-attention',
+      'local-attention>=1.0.3',
       'product-key-memory',
       'mixture-of-experts>=0.2.0',
       'axial-positional-embedding>=0.1.0'
