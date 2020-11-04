@@ -598,13 +598,13 @@ class RoutingTransformerLM(nn.Module):
         self.token_emb = nn.Embedding(num_tokens, emb_dim)
         nn.init.normal_(self.token_emb.weight, std = 0.02)
 
-        self.pos_emb = AxialPositionalEmbedding(emb_dim, axial_shape=(max_seq_len // window_size, window_size)) if not use_absolute_pos_emb else AbsolutePositionalEmbedding(dim, max_seq_len)
+        self.pos_emb = AxialPositionalEmbedding(emb_dim, axial_shape=(max_seq_len // window_size, window_size)) if not use_absolute_pos_emb else AbsolutePositionalEmbedding(emb_dim, max_seq_len)
         self.routing_transformer = RoutingTransformer(dim, depth, max_seq_len, heads = heads, dim_head = dim_head, window_size = window_size, local_attn_window_size = local_attn_window_size, local_attn_radius_blocks = local_attn_radius_blocks, causal = causal, weight_tie = weight_tie, ff_dropout = ff_dropout, attn_dropout = attn_dropout, attn_layer_dropout = attn_layer_dropout, layer_dropout = layer_dropout, n_local_attn_heads = n_local_attn_heads, ff_glu = ff_glu, reversible = reversible, ff_chunks = ff_chunks, kmeans_ema_decay = kmeans_ema_decay, receives_context = receives_context, context_window_size = context_window_size, rel_pos_emb = rel_pos_emb, pkm_layers = pkm_layers, pkm_num_keys = pkm_num_keys,  moe_layers = moe_layers, moe_num_experts = moe_num_experts, moe_loss_coef = moe_loss_coef, num_mem_kv = num_mem_kv, shared_qk = shared_qk, context_shared_qk = context_shared_qk, _register_kmeans_update = _register_kmeans_update, use_rezero = use_rezero, use_scale_norm = use_scale_norm, ff_activation = ff_activation)
 
         if emb_dim != dim:
             self.routing_transformer = ProjectInOut(self.routing_transformer, emb_dim, dim, project_out = not return_embeddings)
 
-        self.norm = nn.LayerNorm(dim)
+        self.norm = nn.LayerNorm(emb_dim)
 
         if return_embeddings:
             self.out = nn.Identity()
