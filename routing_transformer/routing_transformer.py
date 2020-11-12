@@ -434,7 +434,7 @@ class SelfAttention(nn.Module):
         assert not (receives_context and local_attn_heads > 0), 'local attention cannot be used for self attention with context'
         assert not (receives_context and causal), 'contextual attention layer cannot be causal'
 
-        local_attn_window_size = default(local_attn_window_size, window_size // 2)
+        local_attn_window_size = default(local_attn_window_size, window_size)
         context_window_size = default(context_window_size, window_size)
 
         self.shared_qk = shared_qk
@@ -582,6 +582,7 @@ class RoutingTransformer(nn.Module):
             update_kmeans_on_backwards(self)
 
         has_local_attn = any([num > 0 for num in n_local_attn_heads])
+        local_attn_window_size = default(local_attn_window_size, window_size)
         self.pad_to_multiple = local_attn_window_size if has_local_attn else 0
 
     def forward(self, x, **kwargs):
