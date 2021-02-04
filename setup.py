@@ -3,7 +3,7 @@ from setuptools import setup, find_packages
 setup(
   name = 'routing_transformer',
   packages = find_packages(exclude=['examples']),
-  version = '1.4.2',
+  version = '1.4.3',
   license='MIT',
   description = 'Routing Transformer (Pytorch)',
   author = 'Phil Wang, Aran Komatsuzaki',

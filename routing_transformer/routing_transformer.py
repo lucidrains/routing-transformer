@@ -578,12 +578,22 @@ class RoutingTransformer(nn.Module):
         attn_route_map = {'input_mask': route_attn}
         self.layers = execute_type(layers, args_route = {**attn_route_map, **context_route_map}, layer_dropout = layer_dropout)
 
+        self._handle = None
         if _register_kmeans_update:
-            update_kmeans_on_backwards(self)
+            self.register_kmeans_update()
 
         has_local_attn = any([num > 0 for num in n_local_attn_heads])
         local_attn_window_size = default(local_attn_window_size, window_size)
         self.pad_to_multiple = local_attn_window_size if has_local_attn else 0
+
+    def cancel_kmeans_update(self):
+        if self._handle is None:
+            return
+        self._handle.remove()
+        self._handle = None
+
+    def register_kmeans_update(self):
+        self._handle = update_kmeans_on_backwards(self)
 
     def forward(self, x, **kwargs):
         x, loss = self.layers(x, **kwargs)
@@ -600,6 +610,7 @@ class RoutingTransformerLM(nn.Module):
         nn.init.normal_(self.token_emb.weight, std = 0.02)
 
         self.pos_emb = AxialPositionalEmbedding(emb_dim, axial_shape=(max_seq_len // window_size, window_size)) if not use_absolute_pos_emb else AbsolutePositionalEmbedding(emb_dim, max_seq_len)
+
         self.routing_transformer = RoutingTransformer(dim, depth, max_seq_len, heads = heads, dim_head = dim_head, window_size = window_size, local_attn_window_size = local_attn_window_size, local_attn_radius_blocks = local_attn_radius_blocks, causal = causal, weight_tie = weight_tie, ff_dropout = ff_dropout, attn_dropout = attn_dropout, attn_layer_dropout = attn_layer_dropout, layer_dropout = layer_dropout, n_local_attn_heads = n_local_attn_heads, ff_glu = ff_glu, reversible = reversible, ff_chunks = ff_chunks, kmeans_ema_decay = kmeans_ema_decay, receives_context = receives_context, context_window_size = context_window_size, rel_pos_emb = rel_pos_emb, pkm_layers = pkm_layers, pkm_num_keys = pkm_num_keys,  moe_layers = moe_layers, moe_num_experts = moe_num_experts, moe_loss_coef = moe_loss_coef, num_mem_kv = num_mem_kv, shared_qk = shared_qk, context_shared_qk = context_shared_qk, _register_kmeans_update = _register_kmeans_update, use_rezero = use_rezero, use_scale_norm = use_scale_norm, ff_activation = ff_activation)
 
         if emb_dim != dim:
@@ -613,6 +624,10 @@ class RoutingTransformerLM(nn.Module):
             self.out = MatrixMultiply(self.token_emb.weight, transpose = True)
         else:
             self.out = nn.Linear(emb_dim, num_tokens)
+
+    def cancel_kmeans_update(self):
+        transformer = find_modules(self, RoutingTransformer)[0]
+        transformer.cancel_kmeans_update()
 
     def update_kmeans(self):
         for m in find_modules(self, Kmeans):

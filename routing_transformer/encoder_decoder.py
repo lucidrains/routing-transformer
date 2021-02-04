@@ -75,7 +75,18 @@ class RoutingTransformerEncDec(nn.Module):
         if self.dec_reversible:
             print('Warning! Due to an issue with reversible nets and encoder auxiliary losses, you must explicitly call backwards on the encoder auxiliary loss, which is supplied as the second element of the returned tuple on forward')
 
-        update_kmeans_on_backwards(self)
+        self._handle = None
+        self.register_kmeans_update()
+
+    def cancel_kmeans_update(self):
+        if self._handle is None:
+            return
+        self._handle.remove()
+        self._handle = None
+
+    def register_kmeans_update(self):
+        self.cancel_kmeans_update()
+        return update_kmeans_on_backwards(self)
 
     @torch.no_grad()
     def generate(self, seq_in, seq_out_start, max_seq_len = None, **kwargs):
