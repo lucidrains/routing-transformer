@@ -6,6 +6,8 @@ from inspect import isfunction
 from operator import mul
 from functools import partial, reduce, wraps
 
+from einops import rearrange, repeat
+
 from local_attention import LocalAttention
 from axial_positional_embedding import AxialPositionalEmbedding
 from product_key_memory import PKM
@@ -18,6 +20,9 @@ TOKEN_SELF_ATTN_VALUE = -5e4
 KMEAN_INIT_ITERS = 10
 
 # helper functions
+
+def exists(val):
+    return val is not None
 
 def identity(x, *args, **kwargs):
     return x
@@ -97,6 +102,36 @@ def ema_inplace(moving_avg, new, decay):
         moving_avg.data.copy_(new)
         return
     moving_avg.data.mul_(decay).add_(new, alpha= (1 - decay))
+
+
+# rotary
+
+class FixedPositionalEmbedding(nn.Module):
+    def __init__(self, dim):
+        super().__init__()
+        inv_freq = 1. / (10000 ** (torch.arange(0, dim, 2).float() / dim))
+        self.register_buffer('inv_freq', inv_freq)
+
+    def forward(self, x, seq_dim = 1, offset = 0):
+        t = torch.arange(x.shape[seq_dim], device = x.device).type_as(self.inv_freq) + offset
+        sinusoid_inp = torch.einsum('i , j -> i j', t, self.inv_freq)
+        emb = torch.cat((sinusoid_inp.sin(), sinusoid_inp.cos()), dim=-1)
+        return emb[None, :, :]
+
+# rotary positional embedding helpers
+
+def rotate_every_two(x):
+    x = rearrange(x, '... (d j) -> ... d j', j = 2)
+    x1, x2 = x.unbind(dim = -1)
+    x = torch.stack((-x2, x1), dim = -1)
+    return rearrange(x, '... d j -> ... (d j)')
+
+def apply_rotary_pos_emb(q, k, sinu_pos):
+    sinu_pos = rearrange(sinu_pos, '() n (j d) -> n j d', j = 2)
+    sin, cos = sinu_pos.unbind(dim = -2)
+    sin, cos = map(lambda t: repeat(t, 'b n -> b (n j)', j = 2), (sin, cos))
+    q, k = map(lambda t: (t * cos) + (rotate_every_two(t) * sin), (q, k))
+    return q, k
 
 # helper classes
 
@@ -319,7 +354,7 @@ class KmeansAttention(nn.Module):
         self.mem_key = nn.Parameter(torch.randn(num_heads, num_clusters, self.num_mem_kv, head_dim))
         self.mem_value = nn.Parameter(torch.randn(num_heads, num_clusters, self.num_mem_kv, head_dim))
 
-    def forward(self, q, k, v, query_mask = None, key_mask = None, **kwargs):
+    def forward(self, q, k, v, query_mask = None, key_mask = None, pos_emb = None, **kwargs):
         b, h, t, d, kv_t, wsz, c_wsz, nc, device, dtype = *q.shape, k.shape[2], self.window_size, self.context_window_size, self.num_clusters, q.device, q.dtype
         is_reverse = kwargs.pop('_reverse', False)
 
@@ -478,7 +513,7 @@ class SelfAttention(nn.Module):
         self.to_out = nn.Linear(dim_heads, dim, bias = False)
         self.dropout = nn.Dropout(dropout)
 
-    def forward(self, x, context = None, input_mask = None, context_mask = None, **kwargs):
+    def forward(self, x, context = None, input_mask = None, context_mask = None, pos_emb = None, **kwargs):
         assert not (self.receives_context and context is None), 'context must be passed if self attention is set to receive context'
         b, t, e, h, dh = *x.shape, self.heads, self.dim_head
         has_local, has_global = map(lambda x: x > 0, (self.local_attn_heads, self.global_attn_heads))
@@ -501,6 +536,8 @@ class SelfAttention(nn.Module):
 
             q, k, v = map(split_heads, (q, k, v))
 
+            q, k = apply_rotary_pos_emb(q, k, pos_emb)
+
         out = []
         total_loss = torch.tensor(0., requires_grad=True, **to(x))
 
@@ -509,7 +546,7 @@ class SelfAttention(nn.Module):
             out.append(local_out)
 
         if has_global:
-            global_out, loss = self.global_attn(q, k, v, query_mask = input_mask, key_mask = context_mask)
+            global_out, loss = self.global_attn(q, k, v, query_mask = input_mask, key_mask = context_mask, pos_emb = pos_emb)
             total_loss = total_loss + loss
 
             out.append(global_out)
@@ -575,7 +612,7 @@ class RoutingTransformer(nn.Module):
         route_context = ((False, False), *attn_context_layer) * depth
 
         context_route_map = {'context': route_context, 'context_mask': route_context} if receives_context else {}
-        attn_route_map = {'input_mask': route_attn}
+        attn_route_map = {'input_mask': route_attn, 'pos_emb': route_attn}
         self.layers = execute_type(layers, args_route = {**attn_route_map, **context_route_map}, layer_dropout = layer_dropout)
 
         self._handle = None
@@ -600,7 +637,7 @@ class RoutingTransformer(nn.Module):
         return x, loss
 
 class RoutingTransformerLM(nn.Module):
-    def __init__(self, num_tokens, dim, depth, max_seq_len, heads = 8, dim_head = None, window_size = 64, local_attn_window_size = None, local_attn_radius_blocks = 1, causal = False, emb_dim = None, weight_tie = False, attn_dropout = 0., ff_dropout = 0., attn_layer_dropout = 0., layer_dropout = 0., ff_mult = 4, ff_activation = None, ff_glu = False, return_embeddings = False, n_local_attn_heads = 0, reversible = False, ff_chunks = 1, kmeans_ema_decay = 0.999, commitment_factor = 1e-4, receives_context = False, context_window_size = None, rel_pos_emb = True, _register_kmeans_update = True, pkm_layers = tuple(), pkm_num_keys = 128, moe_layers = tuple(), moe_num_experts = 4, moe_loss_coef = 1e-2, num_mem_kv = 0, shared_qk = None, context_shared_qk = False, use_rezero = False, use_scale_norm = False, tie_embedding = False, use_absolute_pos_emb = False):
+    def __init__(self, num_tokens, dim, depth, max_seq_len, heads = 8, dim_head = 64, window_size = 64, local_attn_window_size = None, local_attn_radius_blocks = 1, causal = False, emb_dim = None, weight_tie = False, attn_dropout = 0., ff_dropout = 0., attn_layer_dropout = 0., layer_dropout = 0., ff_mult = 4, ff_activation = None, ff_glu = False, return_embeddings = False, n_local_attn_heads = 0, reversible = False, ff_chunks = 1, kmeans_ema_decay = 0.999, commitment_factor = 1e-4, receives_context = False, context_window_size = None, rel_pos_emb = True, _register_kmeans_update = True, pkm_layers = tuple(), pkm_num_keys = 128, moe_layers = tuple(), moe_num_experts = 4, moe_loss_coef = 1e-2, num_mem_kv = 0, shared_qk = None, context_shared_qk = False, use_rezero = False, use_scale_norm = False, tie_embedding = False, use_absolute_pos_emb = False):
         super().__init__()
         assert (max_seq_len % window_size) == 0, 'max sequence length must be divisible by the window size, to calculate number of kmeans cluster'
         emb_dim = default(emb_dim, dim)
@@ -609,8 +646,9 @@ class RoutingTransformerLM(nn.Module):
         self.token_emb = nn.Embedding(num_tokens, emb_dim)
         nn.init.normal_(self.token_emb.weight, std = 0.02)
 
-        self.pos_emb = AxialPositionalEmbedding(emb_dim, axial_shape=(max_seq_len // window_size, window_size)) if not use_absolute_pos_emb else AbsolutePositionalEmbedding(emb_dim, max_seq_len)
+        # self.pos_emb = AxialPositionalEmbedding(emb_dim, axial_shape=(max_seq_len // window_size, window_size)) if not use_absolute_pos_emb else AbsolutePositionalEmbedding(emb_dim, max_seq_len)
 
+        self.layer_pos_emb = FixedPositionalEmbedding(dim_head)
         self.routing_transformer = RoutingTransformer(dim, depth, max_seq_len, heads = heads, dim_head = dim_head, window_size = window_size, local_attn_window_size = local_attn_window_size, local_attn_radius_blocks = local_attn_radius_blocks, causal = causal, weight_tie = weight_tie, ff_dropout = ff_dropout, attn_dropout = attn_dropout, attn_layer_dropout = attn_layer_dropout, layer_dropout = layer_dropout, n_local_attn_heads = n_local_attn_heads, ff_glu = ff_glu, reversible = reversible, ff_chunks = ff_chunks, kmeans_ema_decay = kmeans_ema_decay, receives_context = receives_context, context_window_size = context_window_size, rel_pos_emb = rel_pos_emb, pkm_layers = pkm_layers, pkm_num_keys = pkm_num_keys,  moe_layers = moe_layers, moe_num_experts = moe_num_experts, moe_loss_coef = moe_loss_coef, num_mem_kv = num_mem_kv, shared_qk = shared_qk, context_shared_qk = context_shared_qk, _register_kmeans_update = _register_kmeans_update, use_rezero = use_rezero, use_scale_norm = use_scale_norm, ff_activation = ff_activation)
 
         if emb_dim != dim:
@@ -635,7 +673,8 @@ class RoutingTransformerLM(nn.Module):
 
     def forward(self, x, **kwargs):
         x = self.token_emb(x)
-        x = x + self.pos_emb(x)
-        x, loss = self.routing_transformer(x, **kwargs)
+        # x = x + self.pos_emb(x)
+        pos_emb = self.layer_pos_emb(x)
+        x, loss = self.routing_transformer(x, pos_emb = pos_emb, **kwargs)
         x = self.norm(x)
         return self.out(x), loss
