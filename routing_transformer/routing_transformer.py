@@ -7,6 +7,7 @@ from operator import mul
 from functools import partial, reduce, wraps
 
 from einops import rearrange, repeat
+from einops.layers.torch import Rearrange
 
 from local_attention import LocalAttention
 
@@ -180,6 +181,19 @@ class MatrixMultiply(nn.Module):
         return x @ tensor
 
 # positional embeddings
+
+class DepthWiseConv1d(nn.Module):
+    def __init__(self, dim_in, dim_out, kernel_size, stride = 1, bias = True, causal = False):
+        super().__init__()
+        self.padding = ((kernel_size - 1), 0) if causal else (kernel_size // 2, kernel_size // 2)
+
+        self.net = nn.Sequential(
+            nn.Conv1d(dim_in, dim_in, kernel_size = kernel_size, groups = dim_in, stride = stride, bias = bias),
+            nn.Conv1d(dim_in, dim_out, 1, bias = bias)
+        )
+    def forward(self, x):
+        x = F.pad(x, self.padding, value = 0.)
+        return self.net(x)
 
 class FixedPositionalEmbedding(nn.Module):
     def __init__(self, dim, max_seq_len):
@@ -449,7 +463,7 @@ class FeedForward(nn.Module):
 # self attention
 
 class SelfAttention(nn.Module):
-    def __init__(self,  dim, depth, max_seq_len, heads, local_attn_heads, window_size, dim_head = None, local_attn_window_size = None, local_attn_radius_blocks = 1, causal = False, attn_dropout = 0., dropout = 0., kmeans_ema_decay = 0.999, commitment_factor = 1e-4, receives_context = False, context_window_size = None, rel_pos_emb = True, num_mem_kv = 0, shared_qk = False):
+    def __init__(self,  dim, depth, max_seq_len, heads, local_attn_heads, window_size, dim_head = None, local_attn_window_size = None, local_attn_radius_blocks = 1, causal = False, attn_dropout = 0., dropout = 0., kmeans_ema_decay = 0.999, commitment_factor = 1e-4, receives_context = False, context_window_size = None, rel_pos_emb = True, num_mem_kv = 0, shared_qk = False, conv_query_kernel = 9):
         super().__init__()
         assert dim_head or (dim % heads) == 0, 'hidden dimension must be divisible by number of heads'
         assert (max_seq_len % window_size) == 0, 'maximum sequence length must be divisible by the target window size'
@@ -466,6 +480,7 @@ class SelfAttention(nn.Module):
         self.local_attn_heads = local_attn_heads
         self.global_attn_heads = heads - local_attn_heads
 
+        self.causal = causal
         self.window_size = window_size
 
         dim_head = default(dim_head, dim // heads)
@@ -490,7 +505,12 @@ class SelfAttention(nn.Module):
         if self.global_attn_heads > 0:
             self.global_attn = KmeansAttention(num_clusters, window_size, self.global_attn_heads, dim_head, causal = causal, dropout = attn_dropout, ema_decay = kmeans_ema_decay, commitment = commitment_factor, receives_context = receives_context, num_mem_kv = num_mem_kv, shared_qk = shared_qk)
 
-        self.to_q = nn.Linear(dim, global_dim_heads, bias = False)
+        self.to_q = nn.Sequential(
+            Rearrange('b n c -> b c n'),
+            DepthWiseConv1d(dim, global_dim_heads, conv_query_kernel, causal = causal),
+            Rearrange('b c n -> b n c')
+        )
+
         self.to_v = nn.Linear(dim, global_dim_heads, bias = False)
 
         if not self.shared_qk:
@@ -532,7 +552,7 @@ class SelfAttention(nn.Module):
             out.append(local_out)
 
         if has_global:
-            if exists(pos_emb):
+            if not self.receives_context and exists(pos_emb):
                 q, k = apply_rotary_pos_emb(q, k, pos_emb)
 
             global_out, loss = self.global_attn(q, k, v, query_mask = input_mask, key_mask = context_mask)
@@ -630,6 +650,7 @@ class RoutingTransformerLM(nn.Module):
         super().__init__()
         assert (max_seq_len % window_size) == 0, 'max sequence length must be divisible by the window size, to calculate number of kmeans cluster'
         emb_dim = default(emb_dim, dim)
+
         self.max_seq_len = max_seq_len
         self.sinu_pos_emb = FixedPositionalEmbedding(dim_head, max_seq_len)
 
@@ -660,7 +681,9 @@ class RoutingTransformerLM(nn.Module):
 
     def forward(self, x, **kwargs):
         x = self.token_emb(x)
-        pos_emb = self.sinu_pos_emb(x)
-        x, loss = self.routing_transformer(x, pos_emb = pos_emb, **kwargs)
+
+        rotary_pos_emb = self.sinu_pos_emb(x)
+        x, loss = self.routing_transformer(x, pos_emb = rotary_pos_emb, **kwargs)
+
         x = self.norm(x)
         return self.out(x), loss
