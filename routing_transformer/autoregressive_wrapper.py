@@ -99,7 +99,7 @@ class AutoregressiveWrapper(nn.Module):
                 x = pad(x)
             return self.net(x, **kwargs)
 
-        m = kwargs.pop('input_mask', None)
+        m = kwargs.get('input_mask', None)
 
         if randomly_truncate_sequence:
             x, m = truncate_sequence(x, m, pad_value = self.pad_value)
@@ -112,7 +112,7 @@ class AutoregressiveWrapper(nn.Module):
 
         if m is not None:
             assert m.shape == x.shape[0:2], 'input mask must be the same shape as the input of the auto-regressive wrapper to automatically handle'
-            kwargs.update(input_mask = m[:, :-1])
+            kwargs['input_mask'] = m[:, :-1]
 
         out, aux_loss = self.net(xi, **kwargs)
 

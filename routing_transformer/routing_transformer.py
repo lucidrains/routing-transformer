@@ -182,19 +182,6 @@ class MatrixMultiply(nn.Module):
 
 # positional embeddings
 
-class DepthWiseConv1d(nn.Module):
-    def __init__(self, dim_in, dim_out, kernel_size, stride = 1, bias = True, causal = False):
-        super().__init__()
-        self.padding = ((kernel_size - 1), 0) if causal else (kernel_size // 2, kernel_size // 2)
-
-        self.net = nn.Sequential(
-            nn.Conv1d(dim_in, dim_in, kernel_size = kernel_size, groups = dim_in, stride = stride, bias = bias),
-            nn.Conv1d(dim_in, dim_out, 1, bias = bias)
-        )
-    def forward(self, x):
-        x = F.pad(x, self.padding, value = 0.)
-        return self.net(x)
-
 class FixedPositionalEmbedding(nn.Module):
     def __init__(self, dim, max_seq_len):
         super().__init__()
@@ -213,12 +200,12 @@ def rotate_every_two(x):
     x = torch.stack((-x2, x1), dim = -1)
     return rearrange(x, '... d j -> ... (d j)')
 
-def apply_rotary_pos_emb(q, k, sinu_pos):
+def apply_rotary_pos_emb(q, k, v, sinu_pos):
     sinu_pos = rearrange(sinu_pos, '() n (j d) -> n j d', j = 2)
     sin, cos = sinu_pos.unbind(dim = -2)
     sin, cos = map(lambda t: repeat(t, 'b n -> b (n j)', j = 2), (sin, cos))
-    q, k = map(lambda t: (t * cos) + (rotate_every_two(t) * sin), (q, k))
-    return q, k
+    q, k, v = map(lambda t: (t * cos) + (rotate_every_two(t) * sin), (q, k, v))
+    return q, k, v
 
 # kmeans related function and class
 
@@ -505,12 +492,7 @@ class SelfAttention(nn.Module):
         if self.global_attn_heads > 0:
             self.global_attn = KmeansAttention(num_clusters, window_size, self.global_attn_heads, dim_head, causal = causal, dropout = attn_dropout, ema_decay = kmeans_ema_decay, commitment = commitment_factor, receives_context = receives_context, num_mem_kv = num_mem_kv, shared_qk = shared_qk)
 
-        self.to_q = nn.Sequential(
-            Rearrange('b n c -> b c n'),
-            DepthWiseConv1d(dim, global_dim_heads, conv_query_kernel, causal = causal),
-            Rearrange('b c n -> b n c')
-        )
-
+        self.to_q = nn.Linear(dim, global_dim_heads, bias = False)
         self.to_v = nn.Linear(dim, global_dim_heads, bias = False)
 
         if not self.shared_qk:
@@ -553,7 +535,7 @@ class SelfAttention(nn.Module):
 
         if has_global:
             if not self.receives_context and exists(pos_emb):
-                q, k = apply_rotary_pos_emb(q, k, pos_emb)
+                q, k, v = apply_rotary_pos_emb(q, k, v, pos_emb)
 
             global_out, loss = self.global_attn(q, k, v, query_mask = input_mask, key_mask = context_mask)
             total_loss = total_loss + loss
