@@ -49,7 +49,8 @@ model = RoutingTransformerLM(
     moe_loss_coef = 1e-2,    # the weight for the auxiliary loss in mixture of experts to keep expert usage balanced
     num_mem_kv = 8,          # number of memory key/values to append to each cluster of each head, from the 'All-Attention' paper. defaults to 1 in the causal case for unshared QK to work
     use_scale_norm = False,  # use scale norm, simplified normalization from 'Transformers without Tears' paper
-    use_rezero = False       # use Rezero with no normalization
+    use_rezero = False,      # use Rezero with no normalization
+    shift_tokens = True      # shift tokens by one along sequence dimension, for a slight improvement in convergence
 ).cuda()
 
 x = torch.randint(0, 20000, (1, 8192)).long().cuda()
@@ -306,5 +307,18 @@ Special thanks to <a href="https://github.com/AranKomat">Aran Komatsuzaki</a> fo
     eprint  = {1706.03762},
     archivePrefix = {arXiv},
     primaryClass = {cs.CL}
+}
+```
+
+```bibtex
+@software{peng_bo_2021_5196578,
+    author       = {PENG Bo},
+    title        = {BlinkDL/RWKV-LM: 0.01},
+    month        = {aug},
+    year         = {2021},
+    publisher    = {Zenodo},
+    version      = {0.01},
+    doi          = {10.5281/zenodo.5196578},
+    url          = {https://doi.org/10.5281/zenodo.5196578%7D
 }
 ```
